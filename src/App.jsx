@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import SignIn from "./pages/SignIn";
 import Dashboard from "./pages/Dashboard";
@@ -8,50 +9,32 @@ import Insights from "./pages/Insights";
 import Layout from "./components/Layout";
 
 function App() {
+  // Wake up backend on page load (prevents first-request timeout on Render free tier)
+  useEffect(() => {
+    const wakeBackend = async () => {
+      try {
+        const response = await fetch(
+          "https://doc-mgmt-backend-tgcs.onrender.com",
+        );
+        console.log("Backend awake:", response.status);
+      } catch (e) {
+        console.log("Backend waking up...");
+      }
+    };
+    wakeBackend();
+  }, []);
+
   return (
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<SignIn />} />
-        <Route
-          path="/dashboard"
-          element={
-            <Layout>
-              <Dashboard />
-            </Layout>
-          }
-        />
-        <Route
-          path="/upload"
-          element={
-            <Layout>
-              <Upload />
-            </Layout>
-          }
-        />
-        <Route
-          path="/workflow"
-          element={
-            <Layout>
-              <Workflow />
-            </Layout>
-          }
-        />
-        <Route
-          path="/reports"
-          element={
-            <Layout>
-              <Reports />
-            </Layout>
-          }
-        />
-        <Route
-          path="/insights"
-          element={
-            <Layout>
-              <Insights />
-            </Layout>
-          }
-        />
+        <Route element={<Layout />}>
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/upload" element={<Upload />} />
+          <Route path="/workflow" element={<Workflow />} />
+          <Route path="/reports" element={<Reports />} />
+          <Route path="/insights" element={<Insights />} />
+        </Route>
       </Routes>
     </BrowserRouter>
   );
