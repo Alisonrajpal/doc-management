@@ -1,5 +1,5 @@
 // This calls your Python backend for AI extraction
-const BACKEND_URL = "http://localhost:8000";
+const BACKEND_URL = "https://doc-mgmt-backend-tgcs.onrender.com";
 
 export async function checkAIAvailability() {
   try {
