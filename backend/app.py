@@ -12,9 +12,14 @@ load_dotenv()
 
 app = FastAPI()
 
+# Updated CORS to allow Vercel frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "https://doc-management-alpha.vercel.app",
+        "https://doc-management.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
