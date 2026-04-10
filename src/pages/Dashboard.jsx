@@ -4,7 +4,6 @@ import { getDocuments } from "../lib/supabase";
 export default function Dashboard() {
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
 
   const userRole = localStorage.getItem("userRole") || "viewer";
   const userName = localStorage.getItem("userName") || "User";
@@ -14,20 +13,12 @@ export default function Dashboard() {
   }, []);
 
   const loadDocuments = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const docs = await getDocuments();
-      setDocuments(docs || []);
-    } catch (err) {
-      console.error("Error loading documents:", err);
-      setError("Failed to load documents. Please refresh the page.");
-    } finally {
-      setLoading(false);
-    }
+    const docs = await getDocuments();
+    setDocuments(docs);
+    setLoading(false);
   };
 
-  // Calculate stats from documents
+  // Calculate real stats from Supabase documents
   const totalDocuments = documents.length;
   const pendingDocuments = documents.filter(
     (doc) =>
@@ -50,46 +41,83 @@ export default function Dashboard() {
     .sort((a, b) => new Date(b.uploaded_at) - new Date(a.uploaded_at))
     .slice(0, 5);
 
-  if (loading) {
-    return (
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "center",
-          height: "400px",
-        }}>
-        <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: "24px", marginBottom: "16px" }}>⏳</div>
-          <p style={{ color: "#6b7280" }}>Loading dashboard...</p>
-          <p style={{ fontSize: "12px", color: "#9ca3af", marginTop: "8px" }}>
-            First load may take 30-60 seconds (backend waking up)
-          </p>
-        </div>
-      </div>
-    );
-  }
+  const getRoleIcon = (role) => {
+    switch (role) {
+      case "admin":
+        return "👑";
+      case "reviewer":
+        return "🔍";
+      case "manager":
+        return "📊";
+      case "finance_admin":
+        return "💰";
+      case "viewer":
+        return "👁️";
+      default:
+        return "👤";
+    }
+  };
 
-  if (error) {
-    return (
-      <div style={{ textAlign: "center", padding: "48px" }}>
-        <p style={{ color: "#ef4444" }}>{error}</p>
-        <button
-          onClick={loadDocuments}
-          style={{
-            marginTop: "16px",
-            padding: "8px 16px",
-            backgroundColor: "#3b82f6",
-            color: "white",
-            border: "none",
-            borderRadius: "8px",
-            cursor: "pointer",
-          }}>
-          Retry
-        </button>
-      </div>
-    );
-  }
+  const getRolePermissions = () => {
+    switch (userRole) {
+      case "admin":
+        return {
+          canUpload: true,
+          canApprove: true,
+          canViewReports: true,
+          badge: "Can approve Step 3 (Final)",
+        };
+      case "reviewer":
+        return {
+          canUpload: true,
+          canApprove: true,
+          canViewReports: true,
+          badge: "Can approve Step 1",
+        };
+      case "manager":
+        return {
+          canUpload: true,
+          canApprove: true,
+          canViewReports: true,
+          badge: "Can approve Step 2",
+        };
+      case "finance_admin":
+        return {
+          canUpload: true,
+          canApprove: true,
+          canViewReports: true,
+          badge: "Can approve Step 3 (Final)",
+        };
+      case "viewer":
+        return {
+          canUpload: true,
+          canApprove: false,
+          canViewReports: true,
+          badge: "View only - cannot approve",
+        };
+      default:
+        return {};
+    }
+  };
+
+  const permissions = getRolePermissions();
+
+  const getStatusBadge = (status) => {
+    switch (status) {
+      case "approved":
+        return { text: "Approved", color: "#10b981", bg: "#d1fae5" };
+      case "rejected":
+        return { text: "Rejected", color: "#ef4444", bg: "#fee2e2" };
+      case "pending_reviewer":
+        return { text: "Pending Reviewer", color: "#f59e0b", bg: "#fef3c7" };
+      case "pending_manager":
+        return { text: "Pending Manager", color: "#f59e0b", bg: "#fef3c7" };
+      case "pending_finance":
+        return { text: "Pending Finance", color: "#f59e0b", bg: "#fef3c7" };
+      default:
+        return { text: status, color: "#6b7280", bg: "#f3f4f6" };
+    }
+  };
 
   return (
     <div style={{ maxWidth: "1200px", margin: "0 auto" }}>
@@ -123,7 +151,41 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Stats Cards */}
+      {/* Role Badge Card */}
+      <div
+        style={{
+          backgroundColor: "#f0f9ff",
+          borderRadius: "16px",
+          padding: "16px",
+          marginBottom: "24px",
+          border: "1px solid #bae6fd",
+        }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <div
+            style={{
+              width: "48px",
+              height: "48px",
+              borderRadius: "50%",
+              backgroundColor: "white",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              boxShadow: "0 1px 2px rgba(0,0,0,0.1)",
+            }}>
+            <span style={{ fontSize: "24px" }}>{getRoleIcon(userRole)}</span>
+          </div>
+          <div>
+            <p style={{ color: "#1f2937", fontWeight: "600" }}>
+              Your Permissions
+            </p>
+            <p style={{ color: "#6b7280", fontSize: "14px" }}>
+              {permissions.badge}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Stats Cards - From Supabase */}
       <div
         style={{
           display: "grid",
@@ -136,11 +198,12 @@ export default function Dashboard() {
             backgroundColor: "white",
             borderRadius: "16px",
             padding: "20px",
+            boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
             border: "1px solid #e5e7eb",
           }}>
           <p style={{ fontSize: "13px", color: "#6b7280" }}>Total Documents</p>
           <p style={{ fontSize: "32px", fontWeight: "bold", color: "#1f2937" }}>
-            {totalDocuments}
+            {loading ? "..." : totalDocuments}
           </p>
         </div>
         <div
@@ -148,11 +211,12 @@ export default function Dashboard() {
             backgroundColor: "white",
             borderRadius: "16px",
             padding: "20px",
+            boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
             border: "1px solid #e5e7eb",
           }}>
           <p style={{ fontSize: "13px", color: "#6b7280" }}>Pending Approval</p>
           <p style={{ fontSize: "32px", fontWeight: "bold", color: "#f59e0b" }}>
-            {pendingDocuments}
+            {loading ? "..." : pendingDocuments}
           </p>
         </div>
         <div
@@ -160,11 +224,12 @@ export default function Dashboard() {
             backgroundColor: "white",
             borderRadius: "16px",
             padding: "20px",
+            boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
             border: "1px solid #e5e7eb",
           }}>
           <p style={{ fontSize: "13px", color: "#6b7280" }}>Approved</p>
           <p style={{ fontSize: "32px", fontWeight: "bold", color: "#10b981" }}>
-            {approvedDocuments}
+            {loading ? "..." : approvedDocuments}
           </p>
         </div>
         <div
@@ -172,21 +237,25 @@ export default function Dashboard() {
             backgroundColor: "white",
             borderRadius: "16px",
             padding: "20px",
+            boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
             border: "1px solid #e5e7eb",
           }}>
-          <p style={{ fontSize: "13px", color: "#6b7280" }}>Total Value</p>
+          <p style={{ fontSize: "13px", color: "#6b7280" }}>
+            Total Value (Approved)
+          </p>
           <p style={{ fontSize: "18px", fontWeight: "bold", color: "#1f2937" }}>
-            R {totalApprovedAmount.toLocaleString()}
+            R {loading ? "..." : totalApprovedAmount.toLocaleString()}
           </p>
         </div>
       </div>
 
-      {/* Recent Activity */}
+      {/* Recent Activity - From Supabase */}
       <div
         style={{
           backgroundColor: "white",
           borderRadius: "16px",
           padding: "24px",
+          boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
           border: "1px solid #e5e7eb",
         }}>
         <h2
@@ -198,71 +267,85 @@ export default function Dashboard() {
           }}>
           Recent Activity
         </h2>
-        {recentDocuments.length === 0 ? (
+        {loading ? (
+          <p style={{ color: "#9ca3af", textAlign: "center", padding: "20px" }}>
+            Loading...
+          </p>
+        ) : recentDocuments.length === 0 ? (
           <div style={{ textAlign: "center", padding: "40px" }}>
             <p style={{ color: "#9ca3af" }}>No documents uploaded yet</p>
             <p style={{ fontSize: "12px", color: "#9ca3af", marginTop: "8px" }}>
-              Upload your first invoice or credit note
+              Upload your first invoice or credit note to get started
             </p>
           </div>
         ) : (
           <div
             style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            {recentDocuments.map((doc) => (
-              <div
-                key={doc.id}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  padding: "12px",
-                  backgroundColor: "#f9fafb",
-                  borderRadius: "8px",
-                }}>
-                <div>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "8px",
-                      marginBottom: "4px",
-                    }}>
-                    <span>{doc.document_type === "invoice" ? "📄" : "📝"}</span>
-                    <p style={{ fontWeight: "500", color: "#1f2937" }}>
-                      {doc.file_name}
+            {recentDocuments.map((doc) => {
+              const statusBadge = getStatusBadge(doc.status);
+              return (
+                <div
+                  key={doc.id}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    padding: "12px",
+                    backgroundColor: "#f9fafb",
+                    borderRadius: "8px",
+                  }}>
+                  <div>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        marginBottom: "4px",
+                      }}>
+                      <span style={{ fontSize: "16px" }}>
+                        {doc.document_type === "invoice" ? "📄" : "📝"}
+                      </span>
+                      <p style={{ fontWeight: "500", color: "#1f2937" }}>
+                        {doc.file_name}
+                      </p>
+                      <span
+                        style={{
+                          fontSize: "11px",
+                          padding: "2px 8px",
+                          borderRadius: "12px",
+                          backgroundColor:
+                            doc.document_type === "invoice"
+                              ? "#dbeafe"
+                              : "#fef3c7",
+                          color:
+                            doc.document_type === "invoice"
+                              ? "#1e40af"
+                              : "#92400e",
+                        }}>
+                        {doc.document_type === "invoice"
+                          ? "INVOICE"
+                          : "CREDIT NOTE"}
+                      </span>
+                    </div>
+                    <p style={{ fontSize: "12px", color: "#6b7280" }}>
+                      {doc.vendor_name} • R{" "}
+                      {parseFloat(doc.amount).toLocaleString()} • Uploaded{" "}
+                      {new Date(doc.uploaded_at).toLocaleDateString()}
                     </p>
                   </div>
-                  <p style={{ fontSize: "12px", color: "#6b7280" }}>
-                    {doc.vendor_name} • R{" "}
-                    {parseFloat(doc.amount).toLocaleString()}
-                  </p>
+                  <span
+                    style={{
+                      fontSize: "11px",
+                      padding: "4px 8px",
+                      borderRadius: "12px",
+                      backgroundColor: statusBadge.bg,
+                      color: statusBadge.color,
+                    }}>
+                    {statusBadge.text}
+                  </span>
                 </div>
-                <span
-                  style={{
-                    fontSize: "11px",
-                    padding: "4px 8px",
-                    borderRadius: "12px",
-                    backgroundColor:
-                      doc.status === "approved"
-                        ? "#d1fae5"
-                        : doc.status === "rejected"
-                          ? "#fee2e2"
-                          : "#fef3c7",
-                    color:
-                      doc.status === "approved"
-                        ? "#065f46"
-                        : doc.status === "rejected"
-                          ? "#991b1b"
-                          : "#92400e",
-                  }}>
-                  {doc.status === "approved"
-                    ? "Approved"
-                    : doc.status === "rejected"
-                      ? "Rejected"
-                      : "Pending"}
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
