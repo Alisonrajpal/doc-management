@@ -274,6 +274,13 @@ async def get_ai_insights():
             "summary": "Using calculated insights"
         }
 
+
+
+@app.post("/debug-text")
+async def debug_text(file: UploadFile = File(...)):
+    file_bytes = await file.read()
+    text = extract_text_from_pdf(file_bytes)
+    return {"raw_text": text}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
