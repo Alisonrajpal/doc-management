@@ -2,10 +2,11 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 import io
 import re
-import PyPDF2
 import os
 import requests
 from dotenv import load_dotenv
+import pdfplumber
+import PyPDF2
 
 # Load environment variables
 load_dotenv()
@@ -35,18 +36,31 @@ async def ping():
     return {"status": "alive"}
 
 def extract_text_from_pdf(file_bytes):
-    """Extract text directly from PDF"""
+    """Extract text directly from PDF using pdfplumber"""
     try:
-        pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
         text = ""
-        for page in pdf_reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+        print(f"Extracted {len(text)} characters")
+        print(f"Preview: {text[:500]}")
         return text
     except Exception as e:
         print(f"PDF extraction error: {e}")
-        return ""
+        # Fallback to PyPDF2
+        try:
+            pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
+            text = ""
+            for page in pdf_reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+            return text
+        except Exception as e2:
+            print(f"Fallback extraction error: {e2}")
+            return ""
 
 def parse_invoice_text(text, is_credit_note=False):
     """Parse invoice or credit note data from extracted text - UNIVERSAL"""
@@ -136,7 +150,7 @@ def parse_invoice_text(text, is_credit_note=False):
     
     # ============ AMOUNT EXTRACTION ============
     amount_patterns = [
-        r'Total\s*Due:\s*[R$£€]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+        r'Total\s+Due:\s*[R$£€]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
         r'Amount\s+Due:\s*[R$£€]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
         r'Total\s*Amount:\s*[R$£€]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
         r'Grand\s+Total:\s*[R$£€]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
@@ -276,11 +290,7 @@ async def get_ai_insights():
             "recommendation_insight": "Continue uploading documents for better insights",
             "summary": "Using calculated insights"
         }
-@app.post("/debug-text")
-async def debug_text(file: UploadFile = File(...)):
-    file_bytes = await file.read()
-    text = extract_text_from_pdf(file_bytes)
-    return {"raw_text": text, "length": len(text)}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

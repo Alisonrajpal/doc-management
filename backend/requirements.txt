@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-PyPDF2
+pdfplumber
 python-multipart
 pytesseract
 pillow
