@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 import io
 import re
@@ -30,7 +30,6 @@ app.add_middleware(
 def read_root():
     return {"message": "PDF Text Extraction is running"}
 
-# ADDED: Ping endpoint for cron-job to keep backend awake
 @app.get("/ping")
 async def ping():
     return {"status": "alive"}
@@ -49,33 +48,48 @@ def extract_text_from_pdf(file_bytes):
         print(f"PDF extraction error: {e}")
         return ""
 
-def parse_invoice_text(text):
-    """Parse invoice data from extracted text"""
+def parse_invoice_text(text, is_credit_note=False):
+    """Parse invoice or credit note data from extracted text"""
     result = {"vendor": "", "number": "", "date": "", "amount": "", "vat": ""}
     
-    # Extract Vendor
+    # Extract Vendor (same for both)
     vendor_match = re.search(r'From:\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
     if vendor_match:
         result["vendor"] = vendor_match.group(1).strip()
     
-    # Extract Invoice Number
-    inv_match = re.search(r'Invoice Number:\s*([A-Z0-9\-]+)', text, re.IGNORECASE)
-    if inv_match:
-        result["number"] = inv_match.group(1).strip()
-    
-    # Extract Date
+    # Extract Date (same for both)
     date_match = re.search(r'Invoice Date:\s*(\d{4}-\d{2}-\d{2})', text, re.IGNORECASE)
+    if not date_match:
+        date_match = re.search(r'Credit Note Date:\s*(\d{4}-\d{2}-\d{2})', text, re.IGNORECASE)
     if date_match:
         result["date"] = date_match.group(1).strip()
     
-    # Extract TOTAL amount
-    total_match = re.search(r'Total\s+(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
-    if not total_match:
-        total_match = re.search(r'Total[\s:]*R\s*(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
-    if total_match:
-        result["amount"] = total_match.group(1).strip()
+    if is_credit_note:
+        # Credit Note specific patterns
+        number_match = re.search(r'Credit Note Number:\s*([A-Z0-9\-]+)', text, re.IGNORECASE)
+        if not number_match:
+            number_match = re.search(r'Credit Note #:\s*([A-Z0-9\-]+)', text, re.IGNORECASE)
+        if number_match:
+            result["number"] = number_match.group(1).strip()
+        
+        amount_match = re.search(r'Total Credit Amount:\s*(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
+        if not amount_match:
+            amount_match = re.search(r'Credit Total:\s*(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
+        if amount_match:
+            result["amount"] = amount_match.group(1).strip()
+    else:
+        # Invoice specific patterns
+        number_match = re.search(r'Invoice Number:\s*([A-Z0-9\-]+)', text, re.IGNORECASE)
+        if number_match:
+            result["number"] = number_match.group(1).strip()
+        
+        amount_match = re.search(r'Total\s+(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
+        if not amount_match:
+            amount_match = re.search(r'Total[\s:]*R\s*(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
+        if amount_match:
+            result["amount"] = amount_match.group(1).strip()
     
-    # Extract VAT
+    # Extract VAT (same for both)
     vat_match = re.search(r'VAT\s*\([^)]+\)\s*(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
     if vat_match:
         result["vat"] = vat_match.group(1).strip()
@@ -83,17 +97,28 @@ def parse_invoice_text(text):
     return result
 
 @app.post("/extract")
-async def extract_invoice_data(file: UploadFile = File(...)):
+async def extract_invoice_data(
+    file: UploadFile = File(...),
+    document_type: str = Form("invoice")
+):
     file_bytes = await file.read()
     filename = file.filename.lower()
-    is_credit_note = "credit" in filename or "credit_note" in filename
+    
+    # Determine if credit note (from passed type or filename)
+    if document_type == "credit_note":
+        is_credit_note = True
+    elif "credit" in filename:
+        is_credit_note = True
+    else:
+        is_credit_note = False
     
     try:
         text = extract_text_from_pdf(file_bytes)
         print(f"Extracted text preview: {text[:300]}")
+        print(f"Is credit note: {is_credit_note}")
         
         if text:
-            result = parse_invoice_text(text)
+            result = parse_invoice_text(text, is_credit_note)
             print(f"Parsed result: {result}")
             
             if result["vendor"] or result["number"] or result["amount"]:
