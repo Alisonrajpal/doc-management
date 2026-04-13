@@ -3,6 +3,3 @@ uvicorn
 python-multipart
 python-dotenv
 requests
-pdf2image
-pytesseract
-pillow

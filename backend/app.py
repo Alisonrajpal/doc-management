@@ -5,17 +5,13 @@ import os
 import re
 import requests
 from dotenv import load_dotenv
-from pdf2image import convert_from_bytes
-import pytesseract
-from PIL import Image
-import tempfile
 
 # Load environment variables
 load_dotenv()
 
 app = FastAPI()
 
-# Updated CORS to allow Vercel frontend
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -29,6 +25,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+OCR_API_KEY = os.getenv("OCR_SPACE_API_KEY", "")
+
 @app.get("/")
 def read_root():
     return {"message": "PDF Text Extraction is running"}
@@ -38,143 +36,117 @@ async def ping():
     return {"status": "alive"}
 
 def extract_text_from_pdf(file_bytes):
-    """Extract text from PDF using OCR - works for ALL PDFs (text-based or scanned)"""
+    """Extract text using OCR.space API - works for ALL PDFs"""
     try:
-        # Convert PDF pages to images
-        images = convert_from_bytes(file_bytes, dpi=300)
+        # Prepare the file for upload
+        files = {'file': ('invoice.pdf', file_bytes, 'application/pdf')}
         
-        all_text = ""
-        for i, image in enumerate(images):
-            # OCR each page
-            text = pytesseract.image_to_string(image)
-            all_text += text + "\n"
-            print(f"Page {i+1} extracted: {len(text)} characters")
+        # Call OCR.space API (free tier)
+        payload = {
+            'apikey': OCR_API_KEY,
+            'language': 'eng',
+            'isOverlayRequired': False,
+            'filetype': 'PDF',
+            'OCREngine': 2  # Use faster engine
+        }
         
-        print(f"Total extracted text: {len(all_text)} characters")
-        print(f"Preview: {all_text[:500]}")
-        return all_text
+        response = requests.post(
+            'https://api.ocr.space/parse/image',
+            files=files,
+            data=payload,
+            timeout=60
+        )
+        
+        result = response.json()
+        
+        if result.get('IsErroredOnProcessing'):
+            print(f"OCR Error: {result.get('ErrorMessage')}")
+            return ""
+        
+        # Extract text from all pages
+        text = ""
+        for page in result.get('ParsedResults', []):
+            text += page.get('ParsedText', "") + "\n"
+        
+        print(f"OCR extracted {len(text)} characters")
+        print(f"Preview: {text[:500]}")
+        return text
         
     except Exception as e:
-        print(f"PDF extraction error: {e}")
+        print(f"OCR extraction error: {e}")
         return ""
 
-def parse_invoice_text(text, is_credit_note=False):
-    """Parse invoice data from OCR text - works for any invoice format"""
+def parse_invoice_text(text):
+    """Parse invoice data from extracted text"""
     result = {"vendor": "", "number": "", "date": "", "amount": "", "vat": ""}
     
     if not text:
         return result
     
-    print("RAW TEXT FOR PARSING:")
-    print(text[:1500])
+    print("RAW TEXT:")
+    print(text[:1000])
     
     # ============ VENDOR EXTRACTION ============
-    # Look for common vendor patterns
-    vendor_patterns = [
+    # Try to find company name
+    patterns = [
         r'From:\s*(.+?)(?:\n|$)',
         r'Vendor:\s*(.+?)(?:\n|$)',
-        r'Seller:\s*(.+?)(?:\n|$)',
-        r'Supplier:\s*(.+?)(?:\n|$)',
-        r'Bill\s+From:\s*(.+?)(?:\n|$)',
+        r'Bill to:\s*(.+?)(?:\n|$)',
         r'^(.*?)(?:LLC|Inc|Ltd|Pty|Corp)',
     ]
-    for pattern in vendor_patterns:
+    for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
         if match:
             result["vendor"] = match.group(1).strip()[:100]
             break
     
-    # Fallback: look for company name in first few lines
-    if not result["vendor"]:
-        lines = text.split('\n')
-        for line in lines[:10]:
-            line = line.strip()
-            if line and len(line) > 5 and len(line) < 100:
-                result["vendor"] = line
-                break
-    
-    # ============ INVOICE NUMBER EXTRACTION ============
-    number_patterns = [
+    # ============ INVOICE NUMBER ============
+    patterns = [
         r'Invoice\s+Number:\s*([A-Z0-9\-]+)',
         r'Invoice\s+#:\s*([A-Z0-9\-]+)',
-        r'Invoice\s+number\s+([A-Z0-9\-]+)',
         r'INV[:\s-]+([A-Z0-9\-]+)',
-        r'([A-Z]{2,}[0-9]{4,}[A-Z0-9\-]*)',
     ]
-    for pattern in number_patterns:
+    for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             result["number"] = match.group(1).strip()
             break
     
-    # ============ DATE EXTRACTION ============
-    date_patterns = [
+    # ============ DATE ============
+    patterns = [
         r'Date:\s*(\d{4}-\d{2}-\d{2})',
         r'Date:\s*(\d{1,2}/\d{1,2}/\d{4})',
         r'Date of issue:\s*(.+?)(?:\n|$)',
-        r'Invoice Date:\s*(.+?)(?:\n|$)',
-        r'(\w+\s+\d{1,2},?\s+\d{4})',
     ]
-    
-    months_map = {
-        'January': '01', 'February': '02', 'March': '03', 'April': '04',
-        'May': '05', 'June': '06', 'July': '07', 'August': '08',
-        'September': '09', 'October': '10', 'November': '11', 'December': '12'
-    }
-    
-    for pattern in date_patterns:
+    for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             date_str = match.group(1)
-            if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
-                result["date"] = date_str
-            elif '/' in date_str:
+            if '/' in date_str:
                 parts = date_str.split('/')
-                if len(parts) == 3:
-                    if len(parts[0]) == 4:
-                        result["date"] = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
-                    else:
-                        result["date"] = f"{parts[2]}-{parts[0].zfill(2)}-{parts[1].zfill(2)}"
+                result["date"] = f"{parts[2]}-{parts[0].zfill(2)}-{parts[1].zfill(2)}"
             else:
-                for month, num in months_map.items():
-                    if month in date_str:
-                        day_match = re.search(r'(\d{1,2})', date_str)
-                        year_match = re.search(r'(\d{4})', date_str)
-                        if day_match and year_match:
-                            result["date"] = f"{year_match.group(1)}-{num}-{day_match.group(1).zfill(2)}"
-                        break
+                result["date"] = date_str
             break
     
-    # ============ AMOUNT EXTRACTION ============
-    amount_patterns = [
+    # ============ AMOUNT ============
+    patterns = [
         r'Amount\s+due:\s*R\s*(\d+(?:\.\d{2})?)',
         r'Total:\s*R\s*(\d+(?:\.\d{2})?)',
         r'Total\s+due:\s*R\s*(\d+(?:\.\d{2})?)',
-        r'Grand\s+Total:\s*R\s*(\d+(?:\.\d{2})?)',
-        r'R\s*(\d+(?:\.\d{2})?)\s*$',
     ]
-    for pattern in amount_patterns:
-        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
         if match:
             result["amount"] = match.group(1)
             break
     
-    # ============ VAT EXTRACTION ============
-    vat_patterns = [
-        r'VAT[^R]*R\s*(\d+(?:\.\d{2})?)',
-        r'Tax[^R]*R\s*(\d+(?:\.\d{2})?)',
-        r'VAT\s*(\d+(?:\.\d{2})?)',
-    ]
-    for pattern in vat_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            vat_value = match.group(1)
-            if float(vat_value) < 10000:
-                result["vat"] = vat_value
-            break
+    # ============ VAT ============
+    match = re.search(r'VAT[^R]*R\s*(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
+    if match:
+        result["vat"] = match.group(1)
     
-    print(f"Final extracted result: {result}")
-    
+    print(f"Extracted: {result}")
     return result
 
 @app.post("/extract")
@@ -185,7 +157,7 @@ async def extract_invoice_data(
     try:
         file_bytes = await file.read()
         
-        # Extract text using OCR (works for all PDFs)
+        # Extract text using OCR.space API
         text = extract_text_from_pdf(file_bytes)
         
         if not text:
@@ -197,9 +169,7 @@ async def extract_invoice_data(
                 "vat": "0.00"
             }
         
-        # Parse the extracted text
-        is_credit_note = document_type == "credit_note" or "credit" in file.filename.lower()
-        result = parse_invoice_text(text, is_credit_note)
+        result = parse_invoice_text(text)
         
         return {
             "vendor": result["vendor"] if result["vendor"] else "Unknown Vendor",
@@ -210,9 +180,7 @@ async def extract_invoice_data(
         }
         
     except Exception as e:
-        print(f"Extraction error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Error: {e}")
         return {
             "vendor": "Unknown Vendor",
             "number": "INV-" + str(int(os.urandom(4).hex(), 16))[:8],
