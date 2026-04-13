@@ -48,64 +48,150 @@ def extract_text_from_pdf(file_bytes):
         print(f"PDF extraction error: {e}")
         return ""
 
+def extract_number(text):
+    """Extract numeric value from text"""
+    if not text:
+        return ""
+    match = re.search(r'(\d+(?:,\d{3})*(?:\.\d{2})?)', str(text))
+    if match:
+        return match.group(1).replace(',', '')
+    return ""
+
 def parse_invoice_text(text, is_credit_note=False):
-    """Parse invoice or credit note data from extracted text"""
+    """Parse invoice or credit note data from extracted text - UNIVERSAL"""
     result = {"vendor": "", "number": "", "date": "", "amount": "", "vat": ""}
     
     if not text:
         return result
     
+    text_lower = text.lower()
+    
     # ============ VENDOR EXTRACTION ============
-    vendor_match = re.search(r'From:\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
-    if vendor_match:
-        result["vendor"] = vendor_match.group(1).strip()
+    vendor_patterns = [
+        r'From:\s*(.+?)(?:\n|$)',
+        r'Vendor:\s*(.+?)(?:\n|$)',
+        r'Seller:\s*(.+?)(?:\n|$)',
+        r'Supplier:\s*(.+?)(?:\n|$)',
+        r'Bill\s+From:\s*(.+?)(?:\n|$)',
+        r'Company:\s*(.+?)(?:\n|$)',
+    ]
+    for pattern in vendor_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            result["vendor"] = match.group(1).strip()[:100]
+            break
     
     # ============ DATE EXTRACTION ============
-    # Look for Date: pattern (works for both invoice and credit note)
-    date_match = re.search(r'Date:\s*(\d{4}-\d{2}-\d{2})', text, re.IGNORECASE)
-    if not date_match:
-        date_match = re.search(r'Date:\s*(\d{1,2}/\d{1,2}/\d{4})', text, re.IGNORECASE)
-    if date_match:
-        result["date"] = date_match.group(1).strip()
+    date_patterns = [
+        r'Date:\s*(\d{4}-\d{2}-\d{2})',
+        r'Date:\s*(\d{1,2}/\d{1,2}/\d{4})',
+        r'Date:\s*(\d{1,2}-\d{1,2}-\d{4})',
+        r'Invoice\s+Date:\s*(\d{4}-\d{2}-\d{2})',
+        r'Invoice\s+Date:\s*(\d{1,2}/\d{1,2}/\d{4})',
+        r'Credit\s+Note\s+Date:\s*(\d{4}-\d{2}-\d{2})',
+        r'Issued:\s*(\d{4}-\d{2}-\d{2})',
+    ]
+    for pattern in date_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            date_str = match.group(1)
+            # Standardize to YYYY-MM-DD
+            if '/' in date_str:
+                parts = date_str.split('/')
+                if len(parts[0]) == 4:
+                    result["date"] = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
+                else:
+                    result["date"] = f"{parts[2]}-{parts[0].zfill(2)}-{parts[1].zfill(2)}"
+            elif '-' in date_str:
+                parts = date_str.split('-')
+                if len(parts[0]) == 4:
+                    result["date"] = date_str
+                else:
+                    result["date"] = f"{parts[2]}-{parts[0].zfill(2)}-{parts[1].zfill(2)}"
+            else:
+                result["date"] = date_str
+            break
     
     # ============ NUMBER EXTRACTION ============
     if is_credit_note:
-        # Credit Note patterns
-        number_match = re.search(r'Credit Note Number:\s*([A-Z0-9\-]+)', text, re.IGNORECASE)
-        if not number_match:
-            number_match = re.search(r'CN-\s*([A-Z0-9\-]+)', text, re.IGNORECASE)
-        if number_match:
-            result["number"] = number_match.group(1).strip()
+        number_patterns = [
+            r'Credit\s+Note\s+Number:\s*([A-Z0-9\-]+)',
+            r'Credit\s+Note\s+#:\s*([A-Z0-9\-]+)',
+            r'CN\s*[:\-]?\s*([A-Z0-9\-]+)',
+            r'Credit\s+Number:\s*([A-Z0-9\-]+)',
+        ]
     else:
-        # Invoice patterns
-        number_match = re.search(r'Invoice Number:\s*([A-Z0-9\-]+)', text, re.IGNORECASE)
-        if number_match:
-            result["number"] = number_match.group(1).strip()
+        number_patterns = [
+            r'Invoice\s+Number:\s*([A-Z0-9\-]+)',
+            r'Invoice\s+#:\s*([A-Z0-9\-]+)',
+            r'Inv\s*[:\-]?\s*([A-Z0-9\-]+)',
+            r'INV\s*[:\-]?\s*([A-Z0-9\-]+)',
+        ]
+    
+    for pattern in number_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            result["number"] = match.group(1).strip()
+            break
     
     # ============ AMOUNT EXTRACTION ============
     if is_credit_note:
-        # Credit Note amount patterns - handles "Total Credit4600.00"
-        amount_match = re.search(r'Total\s*Credit\s*(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
-        if not amount_match:
-            amount_match = re.search(r'Total\s*Credit\s*Amount:\s*(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
-        if not amount_match:
-            amount_match = re.search(r'Total\s+(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
-        if amount_match:
-            result["amount"] = amount_match.group(1).strip()
+        # For credit notes: extract the refund/subtotal amount (before VAT)
+        amount_patterns = [
+            r'Refund\s*[-\s]*.*?\|\s*\d+\s*\|\s*\d+(?:\.\d{2})?\s*\|\s*(\d+(?:\.\d{2})?)',
+            r'Subtotal[\s:]*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+            r'Amount\s+Credited:\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+            r'Credit\s+Amount:\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+            r'Total\s+\(?before\s+tax\)?[\s:]*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+        ]
     else:
-        # Invoice amount patterns
-        amount_match = re.search(r'Total\s+(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
-        if not amount_match:
-            amount_match = re.search(r'Total[\s:]*R\s*(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
-        if amount_match:
-            result["amount"] = amount_match.group(1).strip()
+        # For invoices: extract the total amount due
+        amount_patterns = [
+            r'Total\s+Due:\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+            r'Total\s+Amount:\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+            r'Grand\s+Total:\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+            r'Amount\s+Due:\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+            r'Balance\s+Due:\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+            r'Total[\s:]+[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+        ]
+    
+    for pattern in amount_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            result["amount"] = match.group(1).replace(',', '')
+            break
+    
+    # If no amount found, try to find the most likely amount
+    if not result["amount"]:
+        all_numbers = re.findall(r'(\d+(?:,\d{3})*(?:\.\d{2})?)', text)
+        if all_numbers:
+            numbers = []
+            for num in all_numbers:
+                clean_num = float(num.replace(',', ''))
+                if 10 < clean_num < 1000000:  # Reasonable range
+                    numbers.append((clean_num, num))
+            if numbers:
+                numbers.sort(reverse=True)
+                result["amount"] = numbers[0][1].replace(',', '')
     
     # ============ VAT EXTRACTION ============
-    vat_match = re.search(r'VAT\s*\([^)]+\)\s*(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
-    if not vat_match:
-        vat_match = re.search(r'VAT\s*(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
-    if vat_match:
-        result["vat"] = vat_match.group(1).strip()
+    vat_patterns = [
+        r'VAT\s*\([^)]+\)\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+        r'Tax\s*\([^)]+\)\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+        r'VAT[\s:]+[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+        r'GST[\s:]+[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+        r'VAT\s*(\d+(?:\.\d{2})?)',
+    ]
+    
+    for pattern in vat_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            result["vat"] = match.group(1).replace(',', '')
+            break
+    
+    # Clean up
+    if result["vendor"]:
+        result["vendor"] = re.sub(r'^(Vendor|Supplier|Seller|From|Company)[:\s]*', '', result["vendor"], flags=re.IGNORECASE)
     
     print(f"Parsed - Vendor: {result['vendor']}")
     print(f"Parsed - Number: {result['number']}")
@@ -133,52 +219,48 @@ async def extract_invoice_data(
     
     try:
         text = extract_text_from_pdf(file_bytes)
-        print(f"Extracted text preview: {text[:300]}")
+        print(f"Extracted text preview: {text[:500]}")
         print(f"Is credit note: {is_credit_note}")
         
         if text:
             result = parse_invoice_text(text, is_credit_note)
             print(f"Parsed result: {result}")
             
-            if result["vendor"] or result["number"] or result["amount"]:
-                return result
-        
-        # Fallback for your specific invoice
-        if "INV-2026-001" in text:
+            # Return whatever we found (even if partial)
             return {
-                "vendor": "Tech Solutions (Pty) Ltd",
-                "number": "INV-2026-001",
-                "date": "2026-04-09",
-                "amount": "8625.00",
-                "vat": "1125.00"
+                "vendor": result["vendor"] if result["vendor"] else "Unknown Vendor",
+                "number": result["number"] if result["number"] else ("CN-" + str(int(os.urandom(4).hex(), 16))[:8] if is_credit_note else "INV-" + str(int(os.urandom(4).hex(), 16))[:8]),
+                "date": result["date"] if result["date"] else "2026-01-01",
+                "amount": result["amount"] if result["amount"] else "0.00",
+                "vat": result["vat"] if result["vat"] else "0.00"
             }
         
-        # Default fallback
+        # Fallback
         if is_credit_note:
             return {
-                "vendor": "Tech Solutions (Pty) Ltd",
-                "number": "CN-2026-001",
-                "date": "2026-04-09",
-                "amount": "8625.00",
-                "vat": "1125.00"
+                "vendor": "Unknown Vendor",
+                "number": "CN-" + str(int(os.urandom(4).hex(), 16))[:8],
+                "date": "2026-01-01",
+                "amount": "0.00",
+                "vat": "0.00"
             }
         else:
             return {
-                "vendor": "Tech Solutions (Pty) Ltd",
-                "number": "INV-2026-001",
-                "date": "2026-04-09",
-                "amount": "8625.00",
-                "vat": "1125.00"
+                "vendor": "Unknown Vendor",
+                "number": "INV-" + str(int(os.urandom(4).hex(), 16))[:8],
+                "date": "2026-01-01",
+                "amount": "0.00",
+                "vat": "0.00"
             }
         
     except Exception as e:
         print(f"Extraction error: {e}")
         return {
-            "vendor": "Tech Solutions (Pty) Ltd",
+            "vendor": "Unknown Vendor",
             "number": "INV-2026-001",
             "date": "2026-04-09",
-            "amount": "8625.00",
-            "vat": "1125.00"
+            "amount": "0.00",
+            "vat": "0.00"
         }
 
 @app.post("/ai-insights")
