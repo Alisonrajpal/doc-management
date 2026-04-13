@@ -5,8 +5,9 @@ import os
 import re
 import requests
 from dotenv import load_dotenv
-from invoice2data import extract_data
-from invoice2data.extract.loader import read_templates
+from pdf2image import convert_from_bytes
+import pytesseract
+from PIL import Image
 import tempfile
 
 # Load environment variables
@@ -36,38 +37,145 @@ def read_root():
 async def ping():
     return {"status": "alive"}
 
-# Load templates from the templates folder
-TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
-templates = read_templates(TEMPLATES_DIR)
-
-def convert_date(date_value):
-    """Convert various date formats to YYYY-MM-DD"""
-    if not date_value:
+def extract_text_from_pdf(file_bytes):
+    """Extract text from PDF using OCR - works for ALL PDFs (text-based or scanned)"""
+    try:
+        # Convert PDF pages to images
+        images = convert_from_bytes(file_bytes, dpi=300)
+        
+        all_text = ""
+        for i, image in enumerate(images):
+            # OCR each page
+            text = pytesseract.image_to_string(image)
+            all_text += text + "\n"
+            print(f"Page {i+1} extracted: {len(text)} characters")
+        
+        print(f"Total extracted text: {len(all_text)} characters")
+        print(f"Preview: {all_text[:500]}")
+        return all_text
+        
+    except Exception as e:
+        print(f"PDF extraction error: {e}")
         return ""
+
+def parse_invoice_text(text, is_credit_note=False):
+    """Parse invoice data from OCR text - works for any invoice format"""
+    result = {"vendor": "", "number": "", "date": "", "amount": "", "vat": ""}
     
-    # If it's already YYYY-MM-DD
-    if re.match(r'\d{4}-\d{2}-\d{2}', str(date_value)):
-        return date_value
+    if not text:
+        return result
     
-    # If it's a tuple from invoice2data
-    if isinstance(date_value, tuple) and len(date_value) >= 3:
-        return f"{date_value[0]}-{date_value[1]:02d}-{date_value[2]:02d}"
+    print("RAW TEXT FOR PARSING:")
+    print(text[:1500])
     
-    # If it's a string like "February 9, 2026"
-    months = {
+    # ============ VENDOR EXTRACTION ============
+    # Look for common vendor patterns
+    vendor_patterns = [
+        r'From:\s*(.+?)(?:\n|$)',
+        r'Vendor:\s*(.+?)(?:\n|$)',
+        r'Seller:\s*(.+?)(?:\n|$)',
+        r'Supplier:\s*(.+?)(?:\n|$)',
+        r'Bill\s+From:\s*(.+?)(?:\n|$)',
+        r'^(.*?)(?:LLC|Inc|Ltd|Pty|Corp)',
+    ]
+    for pattern in vendor_patterns:
+        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+        if match:
+            result["vendor"] = match.group(1).strip()[:100]
+            break
+    
+    # Fallback: look for company name in first few lines
+    if not result["vendor"]:
+        lines = text.split('\n')
+        for line in lines[:10]:
+            line = line.strip()
+            if line and len(line) > 5 and len(line) < 100:
+                result["vendor"] = line
+                break
+    
+    # ============ INVOICE NUMBER EXTRACTION ============
+    number_patterns = [
+        r'Invoice\s+Number:\s*([A-Z0-9\-]+)',
+        r'Invoice\s+#:\s*([A-Z0-9\-]+)',
+        r'Invoice\s+number\s+([A-Z0-9\-]+)',
+        r'INV[:\s-]+([A-Z0-9\-]+)',
+        r'([A-Z]{2,}[0-9]{4,}[A-Z0-9\-]*)',
+    ]
+    for pattern in number_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            result["number"] = match.group(1).strip()
+            break
+    
+    # ============ DATE EXTRACTION ============
+    date_patterns = [
+        r'Date:\s*(\d{4}-\d{2}-\d{2})',
+        r'Date:\s*(\d{1,2}/\d{1,2}/\d{4})',
+        r'Date of issue:\s*(.+?)(?:\n|$)',
+        r'Invoice Date:\s*(.+?)(?:\n|$)',
+        r'(\w+\s+\d{1,2},?\s+\d{4})',
+    ]
+    
+    months_map = {
         'January': '01', 'February': '02', 'March': '03', 'April': '04',
         'May': '05', 'June': '06', 'July': '07', 'August': '08',
         'September': '09', 'October': '10', 'November': '11', 'December': '12'
     }
-    date_str = str(date_value)
-    for month, num in months.items():
-        if month in date_str:
-            day_match = re.search(r'(\d{1,2})', date_str)
-            year_match = re.search(r'(\d{4})', date_str)
-            if day_match and year_match:
-                return f"{year_match.group(1)}-{num}-{day_match.group(1).zfill(2)}"
     
-    return str(date_value)
+    for pattern in date_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            date_str = match.group(1)
+            if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
+                result["date"] = date_str
+            elif '/' in date_str:
+                parts = date_str.split('/')
+                if len(parts) == 3:
+                    if len(parts[0]) == 4:
+                        result["date"] = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
+                    else:
+                        result["date"] = f"{parts[2]}-{parts[0].zfill(2)}-{parts[1].zfill(2)}"
+            else:
+                for month, num in months_map.items():
+                    if month in date_str:
+                        day_match = re.search(r'(\d{1,2})', date_str)
+                        year_match = re.search(r'(\d{4})', date_str)
+                        if day_match and year_match:
+                            result["date"] = f"{year_match.group(1)}-{num}-{day_match.group(1).zfill(2)}"
+                        break
+            break
+    
+    # ============ AMOUNT EXTRACTION ============
+    amount_patterns = [
+        r'Amount\s+due:\s*R\s*(\d+(?:\.\d{2})?)',
+        r'Total:\s*R\s*(\d+(?:\.\d{2})?)',
+        r'Total\s+due:\s*R\s*(\d+(?:\.\d{2})?)',
+        r'Grand\s+Total:\s*R\s*(\d+(?:\.\d{2})?)',
+        r'R\s*(\d+(?:\.\d{2})?)\s*$',
+    ]
+    for pattern in amount_patterns:
+        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+        if match:
+            result["amount"] = match.group(1)
+            break
+    
+    # ============ VAT EXTRACTION ============
+    vat_patterns = [
+        r'VAT[^R]*R\s*(\d+(?:\.\d{2})?)',
+        r'Tax[^R]*R\s*(\d+(?:\.\d{2})?)',
+        r'VAT\s*(\d+(?:\.\d{2})?)',
+    ]
+    for pattern in vat_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            vat_value = match.group(1)
+            if float(vat_value) < 10000:
+                result["vat"] = vat_value
+            break
+    
+    print(f"Final extracted result: {result}")
+    
+    return result
 
 @app.post("/extract")
 async def extract_invoice_data(
@@ -75,25 +183,12 @@ async def extract_invoice_data(
     document_type: str = Form("invoice")
 ):
     try:
-        # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            content = await file.read()
-            tmp_file.write(content)
-            tmp_path = tmp_file.name
+        file_bytes = await file.read()
         
-        print(f"Processing file: {file.filename}")
+        # Extract text using OCR (works for all PDFs)
+        text = extract_text_from_pdf(file_bytes)
         
-        # Use invoice2data to extract information
-        result = extract_data(tmp_path, templates=templates)
-        
-        # Clean up temp file
-        os.unlink(tmp_path)
-        
-        print(f"Extraction result: {result}")
-        
-        # Check if extraction was successful
-        if not result or not result.get('amount'):
-            print("No data extracted, using fallback")
+        if not text:
             return {
                 "vendor": "Unknown Vendor",
                 "number": "INV-" + str(int(os.urandom(4).hex(), 16))[:8],
@@ -102,26 +197,16 @@ async def extract_invoice_data(
                 "vat": "0.00"
             }
         
-        # Handle credit notes if needed
+        # Parse the extracted text
         is_credit_note = document_type == "credit_note" or "credit" in file.filename.lower()
-        
-        # Map result to expected format
-        extracted = {
-            "vendor": result.get("vendor_name") or result.get("issuer") or "Unknown Vendor",
-            "number": result.get("invoice_number") or "",
-            "date": convert_date(result.get("date")),
-            "amount": str(result.get("amount")) if result.get("amount") else "0.00",
-            "vat": str(result.get("vat")) if result.get("vat") else "0.00"
-        }
-        
-        print(f"Mapped result: {extracted}")
+        result = parse_invoice_text(text, is_credit_note)
         
         return {
-            "vendor": extracted["vendor"] if extracted["vendor"] else "Unknown Vendor",
-            "number": extracted["number"] if extracted["number"] else "INV-" + str(int(os.urandom(4).hex(), 16))[:8],
-            "date": extracted["date"] if extracted["date"] else "2026-01-01",
-            "amount": extracted["amount"] if extracted["amount"] else "0.00",
-            "vat": extracted["vat"] if extracted["vat"] else "0.00"
+            "vendor": result["vendor"] if result["vendor"] else "Unknown Vendor",
+            "number": result["number"] if result["number"] else "INV-" + str(int(os.urandom(4).hex(), 16))[:8],
+            "date": result["date"] if result["date"] else "2026-01-01",
+            "amount": result["amount"] if result["amount"] else "0.00",
+            "vat": result["vat"] if result["vat"] else "0.00"
         }
         
     except Exception as e:

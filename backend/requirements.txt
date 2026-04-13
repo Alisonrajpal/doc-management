@@ -3,6 +3,6 @@ uvicorn
 python-multipart
 python-dotenv
 requests
-invoice2data
-pdfplumber
-setuptools
+pdf2image
+pytesseract
+pillow
