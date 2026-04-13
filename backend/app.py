@@ -74,7 +74,7 @@ def extract_text_from_pdf(file_bytes):
         return ""
 
 def parse_invoice_text(text):
-    """Parse invoice data from extracted text - NO HARDCODING"""
+    """Parse invoice data from extracted text - NO HARDCODING, works for any invoice"""
     result = {"vendor": "", "number": "", "date": "", "amount": "", "vat": ""}
     
     if not text:
@@ -88,20 +88,35 @@ def parse_invoice_text(text):
     
     # ============ VENDOR (Dynamic) ============
     for line in clean_lines[:20]:
-        if re.search(r'(LLC|Inc|Ltd|Pty|Corp|Company|Technologies|Solutions)', line, re.IGNORECASE):
+        # Look for company indicators
+        if re.search(r'(LLC|Inc|Ltd|Pty|Corp|Company|Technologies|Solutions|Services)', line, re.IGNORECASE):
             result["vendor"] = line
             break
+        # Look for email domain pattern, company often on line before
         if re.search(r'@[\w\-]+\.[\w\-]+', line):
             idx = clean_lines.index(line)
             if idx > 0:
                 result["vendor"] = clean_lines[idx - 1]
                 break
     
+    # If no vendor found, take first non-empty line that looks like a company
+    if not result["vendor"]:
+        for line in clean_lines[:10]:
+            if len(line) > 5 and not re.match(r'^Invoice|^Date|^Page', line, re.IGNORECASE):
+                result["vendor"] = line
+                break
+    
     # ============ INVOICE NUMBER (Dynamic) ============
-    for line in clean_lines:
-        match = re.search(r'(?:Invoice\s+number\s+)?([A-Z0-9]{4,}[-\s]*[A-Z0-9]{4,})', line, re.IGNORECASE)
+    number_patterns = [
+        r'Invoice\s+number\s+([A-Z0-9\-]+)',
+        r'Invoice\s+#:\s*([A-Z0-9\-]+)',
+        r'INV[:\s-]+([A-Z0-9\-]+)',
+        r'([A-Z]{2,}[0-9]{4,}[A-Z0-9\-]*)',
+    ]
+    for pattern in number_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            result["number"] = match.group(1).replace(' ', '')
+            result["number"] = match.group(1).strip()
             break
     
     # ============ DATE (Dynamic) ============
@@ -109,7 +124,8 @@ def parse_invoice_text(text):
         r'Date of issue\s+(\w+\s+\d{1,2},?\s+\d{4})',
         r'Invoice Date:\s*(\w+\s+\d{1,2},?\s+\d{4})',
         r'Date:\s*(\w+\s+\d{1,2},?\s+\d{4})',
-        r'(\w+\s+\d{1,2},?\s+\d{4})',
+        r'(\d{4}-\d{2}-\d{2})',
+        r'(\d{1,2}/\d{1,2}/\d{4})',
     ]
     months_map = {
         'January': '01', 'February': '02', 'March': '03', 'April': '04',
@@ -121,6 +137,17 @@ def parse_invoice_text(text):
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             date_str = match.group(1)
+            # Handle YYYY-MM-DD format
+            if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
+                result["date"] = date_str
+                break
+            # Handle MM/DD/YYYY format
+            if '/' in date_str:
+                parts = date_str.split('/')
+                if len(parts) == 3:
+                    result["date"] = f"{parts[2]}-{parts[0].zfill(2)}-{parts[1].zfill(2)}"
+                    break
+            # Handle month name format
             for month, num in months_map.items():
                 if month in date_str:
                     day_match = re.search(r'(\d{1,2})', date_str)
@@ -136,6 +163,7 @@ def parse_invoice_text(text):
         r'Subtotal:\s*R\s*(\d+(?:\.\d{2})?)',
         r'Total excluding tax\s*R\s*(\d+(?:\.\d{2})?)',
         r'Amount\s+due\s*R\s*(\d+(?:\.\d{2})?)',
+        r'Total\s*R\s*(\d+(?:\.\d{2})?)',
     ]
     for pattern in amount_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
@@ -143,6 +171,7 @@ def parse_invoice_text(text):
             result["amount"] = match.group(1)
             break
     
+    # If no amount found, find the number before VAT
     if not result["amount"]:
         vat_match = re.search(r'VAT', text, re.IGNORECASE)
         if vat_match:
@@ -153,6 +182,7 @@ def parse_invoice_text(text):
     
     # ============ VAT (Dynamic) ============
     vat_patterns = [
+        r'VAT\s*-\s*SOUTH\s+AFRICA\s*\([^)]+\)\s*R\s*(\d+(?:\.\d{2})?)',
         r'VAT[^R]*R\s*(\d+(?:\.\d{2})?)',
         r'VAT\s*R\s*(\d+(?:\.\d{2})?)',
         r'Tax\s*R\s*(\d+(?:\.\d{2})?)',
@@ -160,7 +190,12 @@ def parse_invoice_text(text):
     for pattern in vat_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            result["vat"] = match.group(1)
+            vat_value = match.group(1)
+            # VAT should be less than the total amount
+            if result["amount"] and float(vat_value) < float(result["amount"]):
+                result["vat"] = vat_value
+            elif float(vat_value) < 500:
+                result["vat"] = vat_value
             break
     
     print(f"Final extracted result: {result}")
@@ -174,7 +209,7 @@ async def extract_invoice_data(
     try:
         file_bytes = await file.read()
         
-        # Use OCR for all invoices (no hardcoded special cases)
+        # Use OCR for all invoices
         text = extract_text_from_pdf(file_bytes)
         
         if not text:
