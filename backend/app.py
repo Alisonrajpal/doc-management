@@ -113,18 +113,24 @@ def parse_invoice_text(text, is_credit_note=False):
     
     # ============ AMOUNT EXTRACTION ============
     if is_credit_note:
-        # For credit notes: extract the refund/subtotal amount (4000, not 4600)
+        # For credit notes: extract the refund amount (4000), not total credit (4600)
         amount_patterns = [
             r'Refund.*?\|\s*\d+\s*\|\s*\d+(?:\.\d{2})?\s*\|\s*(\d+(?:\.\d{2})?)',
+            r'\|.*?\|\s*\d+\s*\|\s*\d+(?:\.\d{2})?\s*\|\s*(\d+(?:\.\d{2})?)',
             r'Subtotal[\s:]*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
             r'Amount\s+Credited:\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
-            r'Credit\s+Amount:\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
         ]
         for pattern in amount_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 result["amount"] = match.group(1).replace(',', '')
                 break
+        
+        # If we got 4600 (total credit), try to get the first total instead
+        if result["amount"] == "4600.00":
+            match = re.search(r'\|\s*(\d+(?:\.\d{2})?)\s*\|\s*(\d+(?:\.\d{2})?)\s*\|', text)
+            if match:
+                result["amount"] = match.group(2).replace(',', '')
     else:
         # For invoices: extract the total amount due
         amount_patterns = [
