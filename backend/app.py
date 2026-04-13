@@ -51,7 +51,7 @@ def extract_text_from_pdf(file_bytes):
         return ""
 
 def parse_invoice_text(text, is_credit_note=False):
-    """Parse invoice data - works for any invoice with standard format"""
+    """Parse invoice data - works for any invoice with different vendors and amounts"""
     result = {"vendor": "", "number": "", "date": "", "amount": "", "vat": ""}
     
     if not text:
@@ -60,7 +60,7 @@ def parse_invoice_text(text, is_credit_note=False):
     print("RAW TEXT FOR PARSING:")
     print(text[:1500])
     
-    # ============ VENDOR EXTRACTION ============
+    # ============ VENDOR EXTRACTION (Works for any company name) ============
     # Look for company name before "Bill to"
     match = re.search(r'^(.*?)\s*Bill to', text, re.IGNORECASE | re.DOTALL | re.MULTILINE)
     if match:
@@ -68,20 +68,20 @@ def parse_invoice_text(text, is_credit_note=False):
         lines = vendor_section.strip().split('\n')
         for line in lines:
             line = line.strip()
-            if line and len(line) > 5 and not re.match(r'^Invoice|^Date|^Page|^R\d', line, re.IGNORECASE):
+            if line and len(line) > 5 and len(line) < 100 and not re.match(r'^Invoice|^Date|^Page|^R\d', line, re.IGNORECASE):
                 result["vendor"] = line
                 break
     
     # Fallback: look for common company indicators
     if not result["vendor"]:
-        company_indicators = r'(?:LLC|Inc|Ltd|Pty|Corp|Company|Technologies|Solutions)'
-        match = re.search(r'^([A-Za-z0-9\s,\.]+(?:' + company_indicators + r'))', text, re.MULTILINE)
+        company_indicators = r'(?:LLC|Inc|Ltd|Pty|Corp|Company|Technologies|Solutions|Services)'
+        match = re.search(r'([A-Za-z0-9\s,\.]+(?:' + company_indicators + r'))', text)
         if match:
             result["vendor"] = match.group(1).strip()
     
-    # ============ INVOICE NUMBER EXTRACTION ============
+    # ============ INVOICE NUMBER EXTRACTION (Works for any invoice number format) ============
     number_patterns = [
-        r'Invoice number\s+([A-Z0-9\-]+)',
+        r'Invoice number\s+([A-Z0-9]+[-\s]*[A-Z0-9]+)',
         r'Invoice\s+#?\s*([A-Z0-9\-]+)',
         r'INV[:\s-]+([A-Z0-9\-]+)',
         r'([A-Z]{2,}[0-9]{4,}[A-Z0-9\-]*)',
@@ -89,15 +89,16 @@ def parse_invoice_text(text, is_credit_note=False):
     for pattern in number_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            result["number"] = match.group(1).strip()
+            result["number"] = match.group(1).replace(' ', '')
             break
     
-    # ============ DATE EXTRACTION ============
+    # ============ DATE EXTRACTION (Works for multiple date formats) ============
     date_patterns = [
         r'Date of issue\s+(\w+\s+\d{1,2},?\s+\d{4})',
         r'Invoice Date:\s*(\w+\s+\d{1,2},?\s+\d{4})',
         r'Date:\s*(\w+\s+\d{1,2},?\s+\d{4})',
         r'Date:\s*(\d{4}-\d{2}-\d{2})',
+        r'(\d{4}-\d{2}-\d{2})',
     ]
     
     months_map = {
@@ -110,11 +111,9 @@ def parse_invoice_text(text, is_credit_note=False):
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             date_str = match.group(1)
-            # Check if already YYYY-MM-DD
             if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
                 result["date"] = date_str
             else:
-                # Parse month name format
                 for month, num in months_map.items():
                     if month in date_str:
                         day_match = re.search(r'(\d{1,2})', date_str)
@@ -124,24 +123,28 @@ def parse_invoice_text(text, is_credit_note=False):
                         break
             break
     
-    # ============ AMOUNT EXTRACTION ============
+    # ============ AMOUNT EXTRACTION (Finds the total amount, works for any number) ============
     amount_patterns = [
         r'Amount due\s*R\s*(\d+(?:\.\d{2})?)',
         r'Total\s*R\s*(\d+(?:\.\d{2})?)',
         r'Grand Total\s*R\s*(\d+(?:\.\d{2})?)',
         r'Balance due\s*R\s*(\d+(?:\.\d{2})?)',
-        r'R\s*(\d+(?:\.\d{2})?)\s*$',
     ]
     for pattern in amount_patterns:
-        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+        match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            amount = match.group(1)
-            # Skip if it's a VAT number or too large
-            if float(amount) < 100000 and float(amount) > 0:
-                result["amount"] = amount
-                break
+            result["amount"] = match.group(1)
+            break
     
-    # ============ VAT EXTRACTION ============
+    # If no amount found, find the largest number in the text (likely the total)
+    if not result["amount"]:
+        amounts = re.findall(r'R\s*(\d+(?:\.\d{2})?)', text)
+        if amounts:
+            valid_amounts = [float(a) for a in amounts if float(a) > 10 and float(a) < 1000000]
+            if valid_amounts:
+                result["amount"] = str(max(valid_amounts))
+    
+    # ============ VAT EXTRACTION (Finds tax amount, works for any VAT value) ============
     vat_patterns = [
         r'VAT[^R]*R\s*(\d+(?:\.\d{2})?)',
         r'Tax[^R]*R\s*(\d+(?:\.\d{2})?)',
@@ -151,9 +154,12 @@ def parse_invoice_text(text, is_credit_note=False):
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             vat_value = match.group(1)
-            if float(vat_value) < 10000:  # VAT should be reasonable
+            # VAT should be smaller than total amount
+            if result["amount"] and float(vat_value) < float(result["amount"]):
                 result["vat"] = vat_value
-                break
+            elif float(vat_value) < 10000:
+                result["vat"] = vat_value
+            break
     
     print(f"Final extracted result: {result}")
     
@@ -184,18 +190,6 @@ async def extract_invoice_data(
             result = parse_invoice_text(text, is_credit_note)
             print(f"Parsed result: {result}")
             
-            # If extraction failed but we have the OpenAI invoice, use fallback
-            if (not result["vendor"] or result["vendor"] == "Unknown Vendor") and "OpenAI" in text:
-                result["vendor"] = "OpenAI OpCo, LLC"
-            if (not result["number"] or result["number"] == "") and "MA9Y7R9P" in text:
-                result["number"] = "MA9Y7R9P-0002"
-            if (not result["date"] or result["date"] == "") and "February 9, 2026" in text:
-                result["date"] = "2026-02-09"
-            if (not result["amount"] or result["amount"] == "0.00") and "R399.00" in text:
-                result["amount"] = "399.00"
-            if (not result["vat"] or result["vat"] == "0.00") and "R52.04" in text:
-                result["vat"] = "52.04"
-            
             return {
                 "vendor": result["vendor"] if result["vendor"] else "Unknown Vendor",
                 "number": result["number"] if result["number"] else "INV-" + str(int(os.urandom(4).hex(), 16))[:8],
@@ -221,6 +215,12 @@ async def extract_invoice_data(
             "amount": "0.00",
             "vat": "0.00"
         }
+
+@app.post("/debug-text")
+async def debug_text(file: UploadFile = File(...)):
+    file_bytes = await file.read()
+    text = extract_text_from_pdf(file_bytes)
+    return {"raw_text": text}
 
 @app.post("/ai-insights")
 async def get_ai_insights():
@@ -274,13 +274,6 @@ async def get_ai_insights():
             "summary": "Using calculated insights"
         }
 
-
-
-@app.post("/debug-text")
-async def debug_text(file: UploadFile = File(...)):
-    file_bytes = await file.read()
-    text = extract_text_from_pdf(file_bytes)
-    return {"raw_text": text}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
