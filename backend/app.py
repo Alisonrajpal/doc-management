@@ -56,61 +56,102 @@ def parse_invoice_text(text, is_credit_note=False):
         return result
     
     # ============ VENDOR EXTRACTION ============
-    vendor_match = re.search(r'From:\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
-    if vendor_match:
-        result["vendor"] = vendor_match.group(1).strip()[:100]
+    vendor_patterns = [
+        r'From:\s*(.+?)(?:\n|$)',
+        r'Vendor:\s*(.+?)(?:\n|$)',
+        r'Seller:\s*(.+?)(?:\n|$)',
+        r'Supplier:\s*(.+?)(?:\n|$)',
+        r'Bill\s+From:\s*(.+?)(?:\n|$)',
+    ]
+    for pattern in vendor_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            result["vendor"] = match.group(1).strip()[:100]
+            break
     
     # ============ DATE EXTRACTION ============
-    date_match = re.search(r'Date:\s*(\d{4}-\d{2}-\d{2})', text, re.IGNORECASE)
-    if date_match:
-        result["date"] = date_match.group(1)
+    date_patterns = [
+        r'Date:\s*(\d{4}-\d{2}-\d{2})',
+        r'Date:\s*(\d{1,2}/\d{1,2}/\d{4})',
+        r'Invoice\s+Date:\s*(\d{4}-\d{2}-\d{2})',
+        r'Credit\s+Note\s+Date:\s*(\d{4}-\d{2}-\d{2})',
+        r'Issued:\s*(\d{4}-\d{2}-\d{2})',
+    ]
+    for pattern in date_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            date_str = match.group(1)
+            if '/' in date_str:
+                parts = date_str.split('/')
+                if len(parts[0]) == 4:
+                    result["date"] = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
+                else:
+                    result["date"] = f"{parts[2]}-{parts[0].zfill(2)}-{parts[1].zfill(2)}"
+            else:
+                result["date"] = date_str
+            break
     
     # ============ NUMBER EXTRACTION ============
     if is_credit_note:
-        number_match = re.search(r'Credit\s+Note\s+Number:\s*([A-Z0-9\-]+)', text, re.IGNORECASE)
-        if number_match:
-            result["number"] = number_match.group(1).strip()
+        number_patterns = [
+            r'Credit\s+Note\s+Number:\s*([A-Z0-9\-]+)',
+            r'Credit\s+Note\s+#:\s*([A-Z0-9\-]+)',
+            r'CN\s*[:\-]?\s*([A-Z0-9\-]+)',
+        ]
     else:
-        number_match = re.search(r'Invoice\s+Number:\s*([A-Z0-9\-]+)', text, re.IGNORECASE)
-        if number_match:
-            result["number"] = number_match.group(1).strip()
+        number_patterns = [
+            r'Invoice\s+Number:\s*([A-Z0-9\-]+)',
+            r'Invoice\s+#:\s*([A-Z0-9\-]+)',
+            r'INV\s*[:\-]?\s*([A-Z0-9\-]+)',
+        ]
+    
+    for pattern in number_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            result["number"] = match.group(1).strip()
+            break
     
     # ============ AMOUNT EXTRACTION ============
     if is_credit_note:
-        # Find all numbers in the text
-        numbers = re.findall(r'(\d+(?:\.\d{2})?)', text)
-        print(f"DEBUG - All numbers found: {numbers}")
-        
-        # The refund amount is typically the one that appears with "Refund" and is between 10 and 10000
-        # Look for the number that appears after "Refund" and before "VAT"
-        refund_match = re.search(r'Refund.*?(\d+(?:\.\d{2})?).*?VAT', text, re.DOTALL | re.IGNORECASE)
-        if refund_match:
-            result["amount"] = refund_match.group(1).replace(',', '')
-            print(f"DEBUG - Found refund amount: {result['amount']}")
-        else:
-            # Fallback: find the number that is NOT the unit price (14000) and NOT the total credit (4600)
-            # The refund amount is usually 4000.00 in your case
-            for num in numbers:
-                val = float(num.replace(',', ''))
-                # Skip the unit price (14000) and total credit (4600)
-                if val == 14000.00 or val == 4600.00:
-                    continue
-                # Accept numbers between 10 and 10000
-                if 10 < val < 10000:
-                    result["amount"] = num
-                    break
+        # For credit notes: extract the refund/subtotal amount (4000, not 4600)
+        amount_patterns = [
+            r'Refund.*?\|\s*\d+\s*\|\s*\d+(?:\.\d{2})?\s*\|\s*(\d+(?:\.\d{2})?)',
+            r'Subtotal[\s:]*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+            r'Amount\s+Credited:\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+            r'Credit\s+Amount:\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+        ]
+        for pattern in amount_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                result["amount"] = match.group(1).replace(',', '')
+                break
     else:
         # For invoices: extract the total amount due
-        amount_match = re.search(r'Total\s+(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
-        if amount_match:
-            result["amount"] = amount_match.group(1).replace(',', '')
+        amount_patterns = [
+            r'Total\s+Due:\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+            r'Total\s+Amount:\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+            r'Grand\s+Total:\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+            r'Amount\s+Due:\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+            r'Total[\s:]+[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+        ]
+        for pattern in amount_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                result["amount"] = match.group(1).replace(',', '')
+                break
     
     # ============ VAT EXTRACTION ============
-    vat_match = re.search(r'VAT\s*\([^)]+\)\s*(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
-    if not vat_match:
-        vat_match = re.search(r'VAT\s*(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
-    if vat_match:
-        result["vat"] = vat_match.group(1).replace(',', '')
+    vat_patterns = [
+        r'VAT\s*\([^)]+\)\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+        r'Tax\s*\([^)]+\)\s*[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+        r'VAT[\s:]+[R$]?\s*(\d+(?:,\d{3})*(?:\.\d{2})?)',
+        r'VAT\s*(\d+(?:\.\d{2})?)',
+    ]
+    for pattern in vat_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            result["vat"] = match.group(1).replace(',', '')
+            break
     
     print(f"Parsed - Vendor: {result['vendor']}")
     print(f"Parsed - Number: {result['number']}")
