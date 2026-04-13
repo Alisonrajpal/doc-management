@@ -4,31 +4,56 @@ export default function AIStatus() {
   const [status, setStatus] = useState("checking");
   const [message, setMessage] = useState("");
 
+  // Use production backend URL directly
+  const BACKEND_URL = "https://doc-mgmt-backend-tgcs.onrender.com";
+
   useEffect(() => {
     checkAIStatus();
   }, []);
 
   const checkAIStatus = async () => {
     try {
-      const response = await fetch("http://localhost:8000/");
+      // Set a longer timeout for cold starts (60 seconds)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000);
+      
+      const response = await fetch(`${BACKEND_URL}/`, {
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
       if (response.ok) {
         const data = await response.json();
         setStatus("online");
-        // Display whatever model the backend says it's using
         setMessage(data.message || "Backend ready");
       } else {
         setStatus("offline");
         setMessage("Backend not responding");
       }
     } catch (error) {
-      setStatus("offline");
-      setMessage("Backend offline - using simulation");
+      console.log("Backend waking up...");
+      setStatus("checking");
+      setMessage("Waking up backend...");
+      
+      // Retry after 5 seconds (for cold start)
+      setTimeout(() => {
+        checkAIStatus();
+      }, 5000);
     }
   };
 
-  const getStatusColor = () => (status === "online" ? "#10b981" : "#f59e0b");
-  const getStatusText = () =>
-    status === "online" ? "Online" : "Simulation Mode";
+  const getStatusColor = () => {
+    if (status === "online") return "#10b981";
+    if (status === "checking") return "#f59e0b";
+    return "#ef4444";
+  };
+  
+  const getStatusText = () => {
+    if (status === "online") return "Online";
+    if (status === "checking") return "Waking...";
+    return "Simulation Mode";
+  };
 
   return (
     <div
