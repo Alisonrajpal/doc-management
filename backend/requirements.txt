@@ -1,9 +1,8 @@
 fastapi
 uvicorn
-invoice2data
-pdfplumber
 python-multipart
-pytesseract
-pillow
 python-dotenv
 requests
+invoice2data
+pdfplumber
+setuptools
