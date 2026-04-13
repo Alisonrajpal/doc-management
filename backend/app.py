@@ -18,7 +18,9 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "https://doc-management-alpha.vercel.app",
-        "https://doc-management.vercel.app"
+        "https://doc-management.vercel.app",
+        "https://doc-management-alpha.vercel.app",
+        "https://doc-management-dhvl5too2-alisonrajpals-projects.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],
