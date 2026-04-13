@@ -1,0 +1,24 @@
+issuer: Unknown
+keywords:
+  - Invoice
+  - invoice
+  - VAT
+fields:
+  vendor_name:
+    regex: '(?:From|Vendor|Seller|Company)[:\s]+(.+?)(?:\n|$)'
+    type: regex
+  invoice_number:
+    regex: '(?:Invoice|INV)[\s#:]+([A-Z0-9\-]+)'
+    type: regex
+  date:
+    regex: '(?:Date|Invoice Date)[:\s]+(\d{4}-\d{2}-\d{2})'
+    type: regex
+  amount:
+    regex: '(?:Total|Amount due)[:\s]*[R$]\s*(\d+(?:\.\d{2})?)'
+    type: regex
+  vat:
+    regex: 'VAT[^R]*[R$]\s*(\d+(?:\.\d{2})?)'
+    type: regex
+options:
+  currency: ZAR
+  remove_whitespace: true
