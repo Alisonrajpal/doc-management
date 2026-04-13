@@ -19,7 +19,6 @@ app.add_middleware(
         "http://localhost:5173",
         "https://doc-management-alpha.vercel.app",
         "https://doc-management.vercel.app",
-        "https://doc-management-alpha.vercel.app",
         "https://doc-management-dhvl5too2-alisonrajpals-projects.vercel.app"
     ],
     allow_credentials=True,
@@ -30,6 +29,11 @@ app.add_middleware(
 @app.get("/")
 def read_root():
     return {"message": "PDF Text Extraction is running"}
+
+# ADDED: Ping endpoint for cron-job to keep backend awake
+@app.get("/ping")
+async def ping():
+    return {"status": "alive"}
 
 def extract_text_from_pdf(file_bytes):
     """Extract text directly from PDF"""
