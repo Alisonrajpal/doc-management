@@ -6,7 +6,6 @@ import os
 import requests
 from dotenv import load_dotenv
 import pdfplumber
-import PyPDF2
 
 # Load environment variables
 load_dotenv()
@@ -49,18 +48,7 @@ def extract_text_from_pdf(file_bytes):
         return text
     except Exception as e:
         print(f"PDF extraction error: {e}")
-        # Fallback to PyPDF2
-        try:
-            pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
-            text = ""
-            for page in pdf_reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-            return text
-        except Exception as e2:
-            print(f"Fallback extraction error: {e2}")
-            return ""
+        return ""
 
 def parse_invoice_text(text, is_credit_note=False):
     """Parse invoice or credit note data from extracted text - UNIVERSAL"""
