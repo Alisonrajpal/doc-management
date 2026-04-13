@@ -5,7 +5,7 @@ export async function checkAIAvailability() {
   try {
     const response = await fetch(`${BACKEND_URL}/`);
     if (response.ok) {
-      return { available: true, reason: "GLM-OCR backend is running" };
+      return { available: true, reason: "Backend is running" };
     }
     return { available: false, reason: "Backend not responding" };
   } catch (error) {
@@ -17,6 +17,7 @@ export async function extractInvoiceData(file, documentType = "invoice") {
   try {
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("document_type", documentType);  // Pass document type to backend
 
     const response = await fetch(`${BACKEND_URL}/extract`, {
       method: "POST",
@@ -31,24 +32,11 @@ export async function extractInvoiceData(file, documentType = "invoice") {
 
     // Handle empty or invalid values with fallbacks
     return {
-      vendor_name:
-        data.vendor && data.vendor !== "" ? data.vendor : "Unknown Vendor",
-      invoice_number:
-        data.number && data.number !== ""
-          ? data.number
-          : generateInvoiceNumber(),
-      date:
-        data.date && data.date !== ""
-          ? data.date
-          : new Date().toISOString().split("T")[0],
-      amount:
-        data.amount && data.amount !== ""
-          ? data.amount
-          : (Math.random() * 10000).toFixed(2),
-      vat:
-        data.vat && data.vat !== ""
-          ? data.vat
-          : (Math.random() * 2000).toFixed(2),
+      vendor_name: data.vendor && data.vendor !== "" ? data.vendor : "Unknown Vendor",
+      invoice_number: data.number && data.number !== "" ? data.number : generateInvoiceNumber(),
+      date: data.date && data.date !== "" ? data.date : new Date().toISOString().split("T")[0],
+      amount: data.amount && data.amount !== "" ? data.amount : (Math.random() * 10000).toFixed(2),
+      vat: data.vat && data.vat !== "" ? data.vat : (Math.random() * 2000).toFixed(2),
       document_type: documentType,
     };
   } catch (error) {
