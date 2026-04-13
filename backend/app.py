@@ -66,6 +66,7 @@ def extract_text_from_pdf(file_bytes):
             text += page.get('ParsedText', "") + "\n"
         
         print(f"OCR extracted {len(text)} characters")
+        print(f"Preview: {text[:500]}")
         return text
         
     except Exception as e:
@@ -73,57 +74,68 @@ def extract_text_from_pdf(file_bytes):
         return ""
 
 def parse_invoice_text(text):
-    """Parse invoice data from extracted text"""
+    """Parse invoice data from extracted text - NO HARDCODING"""
     result = {"vendor": "", "number": "", "date": "", "amount": "", "vat": ""}
     
     if not text:
         return result
     
-    print("RAW TEXT:")
+    print("RAW TEXT FOR PARSING:")
     print(text[:1500])
     
     lines = text.split('\n')
     clean_lines = [line.strip() for line in lines if line.strip()]
     
-    # ============ VENDOR ============
+    # ============ VENDOR (Dynamic) ============
     for line in clean_lines[:20]:
-        if 'OpenAI' in line or 'OpenAl' in line:
-            result["vendor"] = "OpenAI OpCo, LLC"
+        if re.search(r'(LLC|Inc|Ltd|Pty|Corp|Company|Technologies|Solutions)', line, re.IGNORECASE):
+            result["vendor"] = line
             break
-        if 'TechNova' in line:
-            result["vendor"] = "TechNova Solutions (Pty) Ltd"
-            break
-    
-    # ============ INVOICE NUMBER ============
-    for line in clean_lines:
-        match = re.search(r'([A-Z0-9]{4,}[-\s]*[A-Z0-9]{4,})', line)
-        if match:
-            inv_num = match.group(1).replace(' ', '')
-            if len(inv_num) >= 8:
-                result["number"] = inv_num
+        if re.search(r'@[\w\-]+\.[\w\-]+', line):
+            idx = clean_lines.index(line)
+            if idx > 0:
+                result["vendor"] = clean_lines[idx - 1]
                 break
     
-    # ============ DATE ============
-    date_pattern = r'(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(\d{4})'
+    # ============ INVOICE NUMBER (Dynamic) ============
     for line in clean_lines:
-        match = re.search(date_pattern, line, re.IGNORECASE)
+        match = re.search(r'(?:Invoice\s+number\s+)?([A-Z0-9]{4,}[-\s]*[A-Z0-9]{4,})', line, re.IGNORECASE)
         if match:
-            month = match.group(1)
-            day = match.group(2).zfill(2)
-            year = match.group(3)
-            month_map = {
-                'January': '01', 'February': '02', 'March': '03', 'April': '04',
-                'May': '05', 'June': '06', 'July': '07', 'August': '08',
-                'September': '09', 'October': '10', 'November': '11', 'December': '12'
-            }
-            result["date"] = f"{year}-{month_map[month]}-{day}"
+            result["number"] = match.group(1).replace(' ', '')
             break
     
-    # ============ AMOUNT ============
+    # ============ DATE (Dynamic) ============
+    date_patterns = [
+        r'Date of issue\s+(\w+\s+\d{1,2},?\s+\d{4})',
+        r'Invoice Date:\s*(\w+\s+\d{1,2},?\s+\d{4})',
+        r'Date:\s*(\w+\s+\d{1,2},?\s+\d{4})',
+        r'(\w+\s+\d{1,2},?\s+\d{4})',
+    ]
+    months_map = {
+        'January': '01', 'February': '02', 'March': '03', 'April': '04',
+        'May': '05', 'June': '06', 'July': '07', 'August': '08',
+        'September': '09', 'October': '10', 'November': '11', 'December': '12'
+    }
+    
+    for pattern in date_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            date_str = match.group(1)
+            for month, num in months_map.items():
+                if month in date_str:
+                    day_match = re.search(r'(\d{1,2})', date_str)
+                    year_match = re.search(r'(\d{4})', date_str)
+                    if day_match and year_match:
+                        result["date"] = f"{year_match.group(1)}-{num}-{day_match.group(1).zfill(2)}"
+                    break
+            break
+    
+    # ============ AMOUNT (Subtotal - before VAT) ============
     amount_patterns = [
+        r'Subtotal\s*R\s*(\d+(?:\.\d{2})?)',
+        r'Subtotal:\s*R\s*(\d+(?:\.\d{2})?)',
+        r'Total excluding tax\s*R\s*(\d+(?:\.\d{2})?)',
         r'Amount\s+due\s*R\s*(\d+(?:\.\d{2})?)',
-        r'Total\s*R\s*(\d+(?:\.\d{2})?)',
-        r'R\s*(\d{3,}\.\d{2})',
     ]
     for pattern in amount_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
@@ -131,14 +143,27 @@ def parse_invoice_text(text):
             result["amount"] = match.group(1)
             break
     
-    # ============ VAT ============
-    match = re.search(r'VAT[^R]*R\s*(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
-    if match:
-        vat_val = match.group(1)
-        if result["amount"] and float(vat_val) < float(result["amount"]):
-            result["vat"] = vat_val
+    if not result["amount"]:
+        vat_match = re.search(r'VAT', text, re.IGNORECASE)
+        if vat_match:
+            before_vat = text[:vat_match.start()]
+            numbers = re.findall(r'R\s*(\d+(?:\.\d{2})?)', before_vat)
+            if numbers:
+                result["amount"] = numbers[-1] if numbers else ""
     
-    print(f"Final result: {result}")
+    # ============ VAT (Dynamic) ============
+    vat_patterns = [
+        r'VAT[^R]*R\s*(\d+(?:\.\d{2})?)',
+        r'VAT\s*R\s*(\d+(?:\.\d{2})?)',
+        r'Tax\s*R\s*(\d+(?:\.\d{2})?)',
+    ]
+    for pattern in vat_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            result["vat"] = match.group(1)
+            break
+    
+    print(f"Final extracted result: {result}")
     return result
 
 @app.post("/extract")
@@ -148,20 +173,8 @@ async def extract_invoice_data(
 ):
     try:
         file_bytes = await file.read()
-        filename = file.filename.lower()
         
-        # SPECIAL CASE: Test invoice
-        if "ma9y7r9p" in filename or "MA9Y7R9P" in filename:
-            print("Detected test invoice - returning known values")
-            return {
-                "vendor": "OpenAI OpCo, LLC",
-                "number": "MA9Y7R9P-0002",
-                "date": "2026-02-09",
-                "amount": "399.00",
-                "vat": "52.04"
-            }
-        
-        # Use OCR for other invoices
+        # Use OCR for all invoices (no hardcoded special cases)
         text = extract_text_from_pdf(file_bytes)
         
         if not text:
@@ -185,6 +198,8 @@ async def extract_invoice_data(
         
     except Exception as e:
         print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
         return {
             "vendor": "Unknown Vendor",
             "number": "INV-" + str(int(os.urandom(4).hex(), 16))[:8],
