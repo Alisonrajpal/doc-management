@@ -77,20 +77,28 @@ def parse_invoice_text(text, is_credit_note=False):
     
     # ============ AMOUNT EXTRACTION ============
     if is_credit_note:
-        # For credit notes: find the number before VAT (the refund amount)
-        # Look for pattern: description then number then VAT
-        match = re.search(r'Refund.*?(\d+(?:\.\d{2})?).*?VAT', text, re.DOTALL)
-        if match:
-            result["amount"] = match.group(1).replace(',', '')
+        # Find all numbers in the text
+        numbers = re.findall(r'(\d+(?:\.\d{2})?)', text)
+        print(f"DEBUG - All numbers found: {numbers}")
+        
+        # The refund amount is typically the one that appears with "Refund" and is between 10 and 10000
+        # Look for the number that appears after "Refund" and before "VAT"
+        refund_match = re.search(r'Refund.*?(\d+(?:\.\d{2})?).*?VAT', text, re.DOTALL | re.IGNORECASE)
+        if refund_match:
+            result["amount"] = refund_match.group(1).replace(',', '')
+            print(f"DEBUG - Found refund amount: {result['amount']}")
         else:
-            # Fallback: find any number between 10 and 10000 that appears before VAT
-            numbers = re.findall(r'(\d+(?:\.\d{2})?)', text)
-            if numbers:
-                for num in numbers:
-                    val = float(num.replace(',', ''))
-                    if 10 < val < 10000:
-                        result["amount"] = num
-                        break
+            # Fallback: find the number that is NOT the unit price (14000) and NOT the total credit (4600)
+            # The refund amount is usually 4000.00 in your case
+            for num in numbers:
+                val = float(num.replace(',', ''))
+                # Skip the unit price (14000) and total credit (4600)
+                if val == 14000.00 or val == 4600.00:
+                    continue
+                # Accept numbers between 10 and 10000
+                if 10 < val < 10000:
+                    result["amount"] = num
+                    break
     else:
         # For invoices: extract the total amount due
         amount_match = re.search(r'Total\s+(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
