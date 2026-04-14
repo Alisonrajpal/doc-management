@@ -68,7 +68,6 @@ def extract_text_from_pdf(file_bytes):
             text += page.get('ParsedText', "") + "\n"
 
         print(f"OCR extracted {len(text)} characters")
-        print(f"Preview: {text[:500]}")
         return text
 
     except Exception as e:
@@ -81,15 +80,19 @@ def clean_ocr_text(text):
     if not text:
         return text
     
-    # Remove spaces between letters and numbers (e.g., "J G 4 5" -> "JG45")
+    # Remove spaces between letters and numbers
     cleaned = re.sub(r'([A-Za-z0-9]) ([A-Za-z0-9])', r'\1\2', text)
     
-    # Fix decimal points (e.g., "1 8 4 6 . 9 6" -> "1846.96")
+    # Fix decimal points
     cleaned = re.sub(r'(\d) (\d)', r'\1\2', cleaned)
     cleaned = re.sub(r'(\d+) \. (\d+)', r'\1.\2', cleaned)
     
-    # Fix: "R 3 9 9 . 0 0" -> "R399.00"
+    # Fix currency
     cleaned = re.sub(r'R (\d)', r'R\1', cleaned)
+    
+    # Fix common words with spaces
+    cleaned = re.sub(r'V\s*A\s*T', 'VAT', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'S\s*O\s*U\s*T\s*H\s*A\s*F\s*R\s*I\s*C\s*A', 'SOUTH AFRICA', cleaned, flags=re.IGNORECASE)
     
     # Remove multiple spaces
     cleaned = re.sub(r'\s+', ' ', cleaned)
@@ -97,166 +100,118 @@ def clean_ocr_text(text):
     return cleaned
 
 
-def extract_vat_from_line(line: str):
-    """Extract VAT amount from a line - takes the last numeric amount"""
-    all_amounts = re.findall(
-        r'-?(?:R|ZAR|\$|£|€)?\s*(\d{1,10}(?:[.,]\d{2,3})?)',
-        line,
-        re.IGNORECASE
-    )
-
-    if not all_amounts:
-        return None
-
-    vat_candidate = all_amounts[-1].replace(',', '.')
-
-    try:
-        value = float(vat_candidate)
-        if 0 < value < 100_000:
-            return f"{value:.2f}"
-    except ValueError:
-        pass
-
-    return None
+def extract_amounts_from_text(text):
+    """Extract all currency amounts from text with their context"""
+    amounts = []
+    # Find all R amounts
+    for match in re.finditer(r'R\s*(\d+(?:[.,]\d{2})?)', text, re.IGNORECASE):
+        amount = match.group(1).replace(',', '.')
+        # Get context (50 chars before and after)
+        start = max(0, match.start() - 50)
+        end = min(len(text), match.end() + 50)
+        context = text[start:end]
+        amounts.append({
+            'value': float(amount),
+            'str': amount,
+            'context': context,
+            'position': match.start()
+        })
+    return amounts
 
 
 def parse_invoice_text(text: str) -> dict:
-    """Parse invoice/credit note data from extracted text"""
+    """Dynamically parse invoice data - no hardcoded values"""
     result = {"vendor": "", "number": "", "date": "", "amount": "", "vat": ""}
-
+    
     if not text:
         return result
-
-    # FIRST: Clean the OCR text
+    
+    # Clean the text
     text = clean_ocr_text(text)
     
-    print("CLEANED TEXT FOR PARSING:")
+    print("CLEANED TEXT:")
     print(text[:1500])
-
-    lines = text.split('\n')
-    clean_lines = [line.strip() for line in lines if line.strip()]
-
-    # ── VENDOR ──────────────────────────────────────────────────────────────
-    for line in clean_lines[:20]:
-        if re.search(r'(LLC|Inc|Ltd|Pty|Corp|Company|Technologies|Solutions|Services)', line, re.IGNORECASE):
-            result["vendor"] = line
-            break
-        if re.search(r'@[\w\-]+\.[\w\-]+', line):
-            idx = clean_lines.index(line)
-            if idx > 0:
-                result["vendor"] = clean_lines[idx - 1]
-                break
-
-    if not result["vendor"]:
-        for line in clean_lines[:10]:
-            if len(line) > 5 and not re.match(r'^(Invoice|Credit|Date|Page|Tax|VAT|Bill)', line, re.IGNORECASE):
-                result["vendor"] = line
-                break
-
-    # ── DOCUMENT NUMBER ────────────────────────────────────────────────────────
+    
+    # ============ VENDOR (Dynamic) ============
+    # Look for company indicators before "Bill to"
+    vendor_match = re.search(r'^(.*?)\s*Bill to', text, re.IGNORECASE | re.DOTALL)
+    if vendor_match:
+        vendor_section = vendor_match.group(1)
+        # Take the first line that looks like a company name
+        lines = vendor_section.split('\n')
+        for line in lines:
+            line = line.strip()
+            if line and len(line) > 5 and len(line) < 100:
+                # Skip common header words
+                if not re.match(r'^Invoice|^Date|^Page', line, re.IGNORECASE):
+                    result["vendor"] = line
+                    break
+    
+    # ============ INVOICE NUMBER (Dynamic) ============
+    # Look for patterns after "Invoice number" or standalone codes
     number_patterns = [
-        r'Credit\s+note\s+(?:number|no\.?|#)?\s*[:\-]?\s*([A-Z0-9][\w\-]*)',
-        r'Invoice\s+(?:number|no\.?|#)?\s*[:\-]?\s*([A-Z0-9][\w\-]*)',
-        r'INV[:\s\-]+([A-Z0-9][\w\-]*)',
-        r'(?:^|\s)([A-Z]{2,}\d{4,}[\w\-]*)',
+        r'Invoice\s+number\s+([A-Z0-9\-]+)',
+        r'Invoice\s+#?\s*([A-Z0-9\-]+)',
+        r'([A-Z]{2,}[0-9]{4,}[A-Z0-9\-]*)',
     ]
     for pattern in number_patterns:
-        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+        match = re.search(pattern, text, re.IGNORECASE)
         if match:
             result["number"] = match.group(1).strip()
             break
-
-    # ── DATE ─────────────────────────────────────────────────────────────────
-    date_patterns = [
-        r'Date of issue\s+(\w+\s+\d{1,2},?\s+\d{4})',
-        r'Invoice Date:\s*(\w+\s+\d{1,2},?\s+\d{4})',
-        r'Date:\s*(\w+\s+\d{1,2},?\s+\d{4})',
-        r'(\d{4}-\d{2}-\d{2})',
-        r'(\d{1,2}/\d{1,2}/\d{4})',
-    ]
-    months_map = {
-        'January': '01', 'February': '02', 'March': '03', 'April': '04',
-        'May': '05', 'June': '06', 'July': '07', 'August': '08',
-        'September': '09', 'October': '10', 'November': '11', 'December': '12'
-    }
-
-    for pattern in date_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            date_str = match.group(1)
-            if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
-                result["date"] = date_str
+    
+    # ============ DATE (Dynamic) ============
+    date_match = re.search(r'Date of issue\s+(\w+\s+\d{1,2},?\s+\d{4})', text, re.IGNORECASE)
+    if not date_match:
+        date_match = re.search(r'Date:\s*(\w+\s+\d{1,2},?\s+\d{4})', text, re.IGNORECASE)
+    if date_match:
+        date_str = date_match.group(1)
+        months = {
+            'January': '01', 'February': '02', 'March': '03', 'April': '04',
+            'May': '05', 'June': '06', 'July': '07', 'August': '08',
+            'September': '09', 'October': '10', 'November': '11', 'December': '12'
+        }
+        for month, num in months.items():
+            if month in date_str:
+                day_match = re.search(r'(\d{1,2})', date_str)
+                year_match = re.search(r'(\d{4})', date_str)
+                if day_match and year_match:
+                    result["date"] = f"{year_match.group(1)}-{num}-{day_match.group(1).zfill(2)}"
                 break
-            if '/' in date_str:
-                parts = date_str.split('/')
-                if len(parts) == 3:
-                    if len(parts[0]) == 4:
-                        result["date"] = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
-                    else:
-                        result["date"] = f"{parts[2]}-{parts[0].zfill(2)}-{parts[1].zfill(2)}"
-                    break
-            for month, num in months_map.items():
-                if month in date_str:
-                    day_match = re.search(r'(\d{1,2})', date_str)
-                    year_match = re.search(r'(\d{4})', date_str)
-                    if day_match and year_match:
-                        result["date"] = f"{year_match.group(1)}-{num}-{day_match.group(1).zfill(2)}"
-                    break
-            if result["date"]:
-                break
-
-    # ── AMOUNT (Subtotal) ────────────────────────────────────────────────────
-    amount_patterns = [
-        r'Subtotal\s*R\s*(\d+(?:\.\d{2})?)',
-        r'Subtotal:\s*R\s*(\d+(?:\.\d{2})?)',
-        r'Total excluding tax\s*R\s*(\d+(?:\.\d{2})?)',
-        r'Amount\s+due\s*R\s*(\d+(?:\.\d{2})?)',
-    ]
-    for pattern in amount_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            result["amount"] = match.group(1)
+    
+    # ============ AMOUNT (Dynamic - find subtotal) ============
+    all_amounts = extract_amounts_from_text(text)
+    
+    # Look for amount labeled as Subtotal or Total excluding tax
+    for amount in all_amounts:
+        if 'Subtotal' in amount['context'] or 'Total excluding tax' in amount['context']:
+            result["amount"] = amount['str']
             break
-
+    
+    # If not found, take the amount before VAT
     if not result["amount"]:
-        vat_pos = re.search(r'\bVAT\b|\bTax\b|\bGST\b', text, re.IGNORECASE)
-        search_area = text[:vat_pos.start()] if vat_pos else text
-        amounts = re.findall(r'(?:R|ZAR|\$|£|€)\s*(\d+(?:[.,]\d{2})?)', search_area, re.IGNORECASE)
-        if amounts:
-            numeric = [float(a.replace(',', '.')) for a in amounts]
-            if numeric:
-                result["amount"] = f"{max(numeric):.2f}"
-
-    # ── VAT ──────────────────────────────────────────────────────────────────
-    vat_line_pattern = re.compile(r'.*(VAT|Tax|GST|Sales\s*Tax).*', re.IGNORECASE)
-
-    for line in clean_lines:
-        if vat_line_pattern.match(line):
-            if re.search(r'registration|reg\.?\s*no|rate\s*only', line, re.IGNORECASE):
-                continue
-            if re.search(r'VAT\s*:\s*\d{7,}', line, re.IGNORECASE):
-                continue
-            if not re.search(r'\d+[.,]\d{2}', line):
-                continue
-
-            vat_value = extract_vat_from_line(line)
-            if vat_value:
-                if result["amount"] and vat_value == result["amount"]:
-                    continue
-                result["vat"] = vat_value
-                print(f"DEBUG - VAT line: '{line}' → VAT: {vat_value}")
+        vat_positions = [m.start() for m in re.finditer(r'VAT', text, re.IGNORECASE)]
+        if vat_positions:
+            before_vat = text[:vat_positions[0]]
+            amounts_before_vat = extract_amounts_from_text(before_vat)
+            if amounts_before_vat:
+                # Take the largest amount before VAT (likely the subtotal)
+                largest = max(amounts_before_vat, key=lambda x: x['value'])
+                result["amount"] = largest['str']
+    
+    # ============ VAT (Dynamic - find tax amount) ============
+    # Look for amount after VAT that is smaller than the total
+    vat_matches = re.findall(r'VAT[^R]*R\s*(\d+(?:[.,]\d{2})?)', text, re.IGNORECASE | re.DOTALL)
+    if vat_matches:
+        for vat_candidate in vat_matches:
+            vat_val = float(vat_candidate.replace(',', '.'))
+            if result["amount"] and vat_val < float(result["amount"]):
+                result["vat"] = vat_candidate.replace(',', '.')
                 break
-
-    # Fallback: calculate from percentage
-    if not result["vat"] and result["amount"]:
-        pct_match = re.search(r'(\d+(?:\.\d+)?)\s*%', text)
-        if pct_match:
-            rate = float(pct_match.group(1)) / 100
-            base = float(result["amount"])
-            if 0.05 <= rate <= 0.30:
-                result["vat"] = f"{base * rate:.2f}"
-                print(f"DEBUG - VAT calculated from {rate*100:.0f}%: {result['vat']}")
-
+            elif 10 < vat_val < 1000:
+                result["vat"] = vat_candidate.replace(',', '.')
+                break
+    
     print(f"Final extracted result: {result}")
     return result
 
