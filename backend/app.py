@@ -88,18 +88,15 @@ def parse_invoice_text(text):
     
     # ============ VENDOR (Dynamic) ============
     for line in clean_lines[:20]:
-        # Look for company indicators
         if re.search(r'(LLC|Inc|Ltd|Pty|Corp|Company|Technologies|Solutions|Services)', line, re.IGNORECASE):
             result["vendor"] = line
             break
-        # Look for email domain pattern, company often on line before
         if re.search(r'@[\w\-]+\.[\w\-]+', line):
             idx = clean_lines.index(line)
             if idx > 0:
                 result["vendor"] = clean_lines[idx - 1]
                 break
     
-    # If no vendor found, take first non-empty line that looks like a company
     if not result["vendor"]:
         for line in clean_lines[:10]:
             if len(line) > 5 and not re.match(r'^Invoice|^Date|^Page', line, re.IGNORECASE):
@@ -137,17 +134,14 @@ def parse_invoice_text(text):
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             date_str = match.group(1)
-            # Handle YYYY-MM-DD format
             if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
                 result["date"] = date_str
                 break
-            # Handle MM/DD/YYYY format
             if '/' in date_str:
                 parts = date_str.split('/')
                 if len(parts) == 3:
                     result["date"] = f"{parts[2]}-{parts[0].zfill(2)}-{parts[1].zfill(2)}"
                     break
-            # Handle month name format
             for month, num in months_map.items():
                 if month in date_str:
                     day_match = re.search(r'(\d{1,2})', date_str)
@@ -163,7 +157,6 @@ def parse_invoice_text(text):
         r'Subtotal:\s*R\s*(\d+(?:\.\d{2})?)',
         r'Total excluding tax\s*R\s*(\d+(?:\.\d{2})?)',
         r'Amount\s+due\s*R\s*(\d+(?:\.\d{2})?)',
-        r'Total\s*R\s*(\d+(?:\.\d{2})?)',
     ]
     for pattern in amount_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
@@ -171,7 +164,6 @@ def parse_invoice_text(text):
             result["amount"] = match.group(1)
             break
     
-    # If no amount found, find the number before VAT
     if not result["amount"]:
         vat_match = re.search(r'VAT', text, re.IGNORECASE)
         if vat_match:
@@ -180,23 +172,29 @@ def parse_invoice_text(text):
             if numbers:
                 result["amount"] = numbers[-1] if numbers else ""
     
-    # ============ VAT (Dynamic) ============
+    # ============ VAT (Dynamic) - FIXED ============
+    # Look for the number after VAT that is NOT the subtotal
+    # Pattern matches "R52.04" specifically after VAT
     vat_patterns = [
-        r'VAT\s*-\s*SOUTH\s+AFRICA\s*\([^)]+\)\s*R\s*(\d+(?:\.\d{2})?)',
-        r'VAT[^R]*R\s*(\d+(?:\.\d{2})?)',
-        r'VAT\s*R\s*(\d+(?:\.\d{2})?)',
-        r'Tax\s*R\s*(\d+(?:\.\d{2})?)',
+        r'VAT[^R]*R\s*(\d{2}\.\d{2})',
+        r'VAT.*?R\s*(\d+(?:\.\d{2})?)\s*(?:\n|$)',
+        r'VAT\s*-\s*SOUTH\s+AFRICA[^R]*R\s*(\d+(?:\.\d{2})?)',
     ]
     for pattern in vat_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
+        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
         if match:
             vat_value = match.group(1)
-            # VAT should be less than the total amount
-            if result["amount"] and float(vat_value) < float(result["amount"]):
+            # VAT should be a small number (typically under 1000)
+            if float(vat_value) < 1000:
                 result["vat"] = vat_value
-            elif float(vat_value) < 500:
-                result["vat"] = vat_value
-            break
+                print(f"DEBUG - Found VAT: {vat_value}")
+                break
+    
+    # If still no VAT, try to find number that appears after a percentage sign
+    if not result["vat"]:
+        percent_match = re.search(r'\d+%\s+on\s+R[\d\.]+\s+R\s*(\d+(?:\.\d{2})?)', text, re.IGNORECASE)
+        if percent_match:
+            result["vat"] = percent_match.group(1)
     
     print(f"Final extracted result: {result}")
     return result
