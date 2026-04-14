@@ -76,18 +76,29 @@ def extract_text_from_pdf(file_bytes):
         return ""
 
 
-def extract_vat_from_line(line: str):
-    """
-    Collect ALL numeric amounts on the line (ignoring negative signs and
-    currency symbols) and return the LAST one — that is always the VAT
-    charge, not the base amount inside the parenthetical.
+def clean_ocr_text(text):
+    """Clean OCR text that has spaces between every character"""
+    if not text:
+        return text
+    
+    # Remove spaces between letters and numbers (e.g., "J G 4 5" -> "JG45")
+    cleaned = re.sub(r'([A-Za-z0-9]) ([A-Za-z0-9])', r'\1\2', text)
+    
+    # Fix decimal points (e.g., "1 8 4 6 . 9 6" -> "1846.96")
+    cleaned = re.sub(r'(\d) (\d)', r'\1\2', cleaned)
+    cleaned = re.sub(r'(\d+) \. (\d+)', r'\1.\2', cleaned)
+    
+    # Fix: "R 3 9 9 . 0 0" -> "R399.00"
+    cleaned = re.sub(r'R (\d)', r'R\1', cleaned)
+    
+    # Remove multiple spaces
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    
+    return cleaned
 
-    Examples:
-      "VAT - ZA (15% on R300.00) -R45.00"  →  last amount = 45.00
-      "VAT (15% on R346.96) R52.04"         →  last amount = 52.04
-      "VAT 15% R52.04"                      →  last amount = 52.04
-      "GST (10% of $500.00) $50.00"         →  last amount = 50.00
-    """
+
+def extract_vat_from_line(line: str):
+    """Extract VAT amount from a line - takes the last numeric amount"""
     all_amounts = re.findall(
         r'-?(?:R|ZAR|\$|£|€)?\s*(\d{1,10}(?:[.,]\d{2,3})?)',
         line,
@@ -110,13 +121,16 @@ def extract_vat_from_line(line: str):
 
 
 def parse_invoice_text(text: str) -> dict:
-    """Parse invoice/credit note data from extracted text - works for any document"""
+    """Parse invoice/credit note data from extracted text"""
     result = {"vendor": "", "number": "", "date": "", "amount": "", "vat": ""}
 
     if not text:
         return result
 
-    print("RAW TEXT FOR PARSING:")
+    # FIRST: Clean the OCR text
+    text = clean_ocr_text(text)
+    
+    print("CLEANED TEXT FOR PARSING:")
     print(text[:1500])
 
     lines = text.split('\n')
@@ -139,12 +153,10 @@ def parse_invoice_text(text: str) -> dict:
                 result["vendor"] = line
                 break
 
-    # ── DOCUMENT NUMBER (Credit Note takes priority over Invoice) ────────────
-    # Credit note number must be checked FIRST — otherwise the "Reference invoice"
-    # field (e.g. INV-APR13-1150) gets picked up as the document number.
+    # ── DOCUMENT NUMBER ────────────────────────────────────────────────────────
     number_patterns = [
-        r'Credit\s+note\s+(?:number|no\.?|#)\s*[:\-]?\s*([A-Z0-9][\w\-]*)',
-        r'Invoice\s+(?:number|no\.?|#)\s*[:\-]?\s*([A-Z0-9][\w\-]*)',
+        r'Credit\s+note\s+(?:number|no\.?|#)?\s*[:\-]?\s*([A-Z0-9][\w\-]*)',
+        r'Invoice\s+(?:number|no\.?|#)?\s*[:\-]?\s*([A-Z0-9][\w\-]*)',
         r'INV[:\s\-]+([A-Z0-9][\w\-]*)',
         r'(?:^|\s)([A-Z]{2,}\d{4,}[\w\-]*)',
     ]
@@ -155,15 +167,12 @@ def parse_invoice_text(text: str) -> dict:
             break
 
     # ── DATE ─────────────────────────────────────────────────────────────────
-    # Handles: "13 April 2026" (day-first), "April 13, 2026" (month-first),
-    #          "2026-04-13" (ISO), "13/04/2026", "13-04-2026"
     date_patterns = [
-        r'(?:Date of issue|Invoice Date|Issue Date|Date)[:\s]+(\d{1,2}\s+\w+\s+\d{4})',  # day-first month-name
-        r'(?:Date of issue|Invoice Date|Issue Date|Date)[:\s]+(\w+\s+\d{1,2},?\s+\d{4})',  # month-first month-name
-        r'(?:Date of issue|Invoice Date|Issue Date|Date)[:\s]+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})',
+        r'Date of issue\s+(\w+\s+\d{1,2},?\s+\d{4})',
+        r'Invoice Date:\s*(\w+\s+\d{1,2},?\s+\d{4})',
+        r'Date:\s*(\w+\s+\d{1,2},?\s+\d{4})',
         r'(\d{4}-\d{2}-\d{2})',
         r'(\d{1,2}/\d{1,2}/\d{4})',
-        r'(\d{1,2}-\d{1,2}-\d{4})',
     ]
     months_map = {
         'January': '01', 'February': '02', 'March': '03', 'April': '04',
@@ -174,90 +183,71 @@ def parse_invoice_text(text: str) -> dict:
     for pattern in date_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            date_str = match.group(1).strip()
-
-            # Already ISO
+            date_str = match.group(1)
             if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
                 result["date"] = date_str
                 break
-
-            # Numeric slash/dash (no letters)
-            if re.search(r'[\/\-]', date_str) and not re.search(r'[a-zA-Z]', date_str):
-                parts = re.split(r'[\/\-]', date_str)
+            if '/' in date_str:
+                parts = date_str.split('/')
                 if len(parts) == 3:
-                    if len(parts[0]) == 4:  # year first
+                    if len(parts[0]) == 4:
                         result["date"] = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
-                    else:  # day or month first
+                    else:
                         result["date"] = f"{parts[2]}-{parts[0].zfill(2)}-{parts[1].zfill(2)}"
                     break
-
-            # Month-name format — handles both "13 April 2026" and "April 13, 2026"
             for month, num in months_map.items():
-                if month.lower() in date_str.lower():
+                if month in date_str:
                     day_match = re.search(r'(\d{1,2})', date_str)
                     year_match = re.search(r'(\d{4})', date_str)
                     if day_match and year_match:
                         result["date"] = f"{year_match.group(1)}-{num}-{day_match.group(1).zfill(2)}"
                     break
-
             if result["date"]:
                 break
 
-    # ── AMOUNT (subtotal / pre-tax) — handles negative credit note values ────
-    # Negative amounts (e.g. -R300.00) are stored as positive numbers;
-    # the frontend can apply sign logic based on document_type if needed.
+    # ── AMOUNT (Subtotal) ────────────────────────────────────────────────────
     amount_patterns = [
-        r'(?:Subtotal|Sub-total|Sub total)[:\s]*-?(?:R|ZAR|\$|£|€)?\s*(\d+(?:[.,]\d{2})?)',
-        r'(?:Total excluding tax|Taxable amount|Net amount)[:\s]*-?(?:R|ZAR|\$|£|€)?\s*(\d+(?:[.,]\d{2})?)',
-        r'(?:Amount due|Amount payable)[:\s]*-?(?:R|ZAR|\$|£|€)?\s*(\d+(?:[.,]\d{2})?)',
+        r'Subtotal\s*R\s*(\d+(?:\.\d{2})?)',
+        r'Subtotal:\s*R\s*(\d+(?:\.\d{2})?)',
+        r'Total excluding tax\s*R\s*(\d+(?:\.\d{2})?)',
+        r'Amount\s+due\s*R\s*(\d+(?:\.\d{2})?)',
     ]
     for pattern in amount_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            result["amount"] = match.group(1).replace(',', '.')
+            result["amount"] = match.group(1)
             break
 
-    # Fallback: largest R-amount before the first VAT/Tax mention
     if not result["amount"]:
         vat_pos = re.search(r'\bVAT\b|\bTax\b|\bGST\b', text, re.IGNORECASE)
         search_area = text[:vat_pos.start()] if vat_pos else text
-        amounts = re.findall(r'-?(?:R|ZAR|\$|£|€)\s*(\d+(?:[.,]\d{2})?)', search_area, re.IGNORECASE)
+        amounts = re.findall(r'(?:R|ZAR|\$|£|€)\s*(\d+(?:[.,]\d{2})?)', search_area, re.IGNORECASE)
         if amounts:
             numeric = [float(a.replace(',', '.')) for a in amounts]
-            result["amount"] = f"{max(numeric):.2f}"
+            if numeric:
+                result["amount"] = f"{max(numeric):.2f}"
 
     # ── VAT ──────────────────────────────────────────────────────────────────
-    # Strategy: find every line mentioning VAT/Tax/GST, then use
-    # extract_vat_from_line() which always returns the LAST numeric amount —
-    # that is the actual VAT charged, not the base (which sits inside
-    # the parenthetical earlier in the line).
-    vat_line_pattern = re.compile(
-        r'.*(VAT|Tax|GST|Sales\s*Tax|Value.?Added).*',
-        re.IGNORECASE
-    )
+    vat_line_pattern = re.compile(r'.*(VAT|Tax|GST|Sales\s*Tax).*', re.IGNORECASE)
 
     for line in clean_lines:
         if vat_line_pattern.match(line):
-            # Skip header/registration lines
             if re.search(r'registration|reg\.?\s*no|rate\s*only', line, re.IGNORECASE):
                 continue
-            # Skip VAT registration number lines like "VAT: 4123456789"
             if re.search(r'VAT\s*:\s*\d{7,}', line, re.IGNORECASE):
                 continue
-            # Must have a decimal amount (e.g. 45.00 or 52.04)
             if not re.search(r'\d+[.,]\d{2}', line):
                 continue
 
             vat_value = extract_vat_from_line(line)
             if vat_value:
-                # Don't accept if it equals the subtotal (would mean we grabbed wrong number)
                 if result["amount"] and vat_value == result["amount"]:
                     continue
                 result["vat"] = vat_value
                 print(f"DEBUG - VAT line: '{line}' → VAT: {vat_value}")
                 break
 
-    # Fallback: calculate from percentage if subtotal is known
+    # Fallback: calculate from percentage
     if not result["vat"] and result["amount"]:
         pct_match = re.search(r'(\d+(?:\.\d+)?)\s*%', text)
         if pct_match:
@@ -311,6 +301,20 @@ async def extract_invoice_data(
             "amount": "0.00",
             "vat": "0.00"
         }
+
+
+@app.post("/debug-text")
+async def debug_text(file: UploadFile = File(...)):
+    """Debug endpoint to see raw OCR text"""
+    file_bytes = await file.read()
+    raw_text = extract_text_from_pdf(file_bytes)
+    cleaned_text = clean_ocr_text(raw_text)
+    return {
+        "raw_text": raw_text,
+        "cleaned_text": cleaned_text,
+        "raw_length": len(raw_text),
+        "cleaned_length": len(cleaned_text)
+    }
 
 
 @app.post("/ai-insights")
