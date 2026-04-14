@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { getDocuments } from "../lib/supabase";
+import { supabase } from "../lib/supabase";
 import {
   BarChart,
   Bar,
@@ -18,10 +19,12 @@ import {
 
 export default function Reports() {
   const [documents, setDocuments] = useState([]);
+  const [approvals, setApprovals] = useState({});
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterVendor, setFilterVendor] = useState("");
   const [vendors, setVendors] = useState([]);
+  const [expandedRow, setExpandedRow] = useState(null);
 
   const userRole = localStorage.getItem("userRole") || "viewer";
 
@@ -33,12 +36,32 @@ export default function Reports() {
     setLoading(true);
     const docs = await getDocuments();
     setDocuments(docs);
+    
+    // Load approvals for all documents
+    await loadApprovals(docs);
+    
     // Extract unique vendors
     const uniqueVendors = [
       ...new Set(docs.map((doc) => doc.vendor_name).filter(Boolean)),
     ];
     setVendors(uniqueVendors);
     setLoading(false);
+  };
+
+  const loadApprovals = async (docs) => {
+    const approvalsMap = {};
+    for (const doc of docs) {
+      const { data } = await supabase
+        .from("approvals")
+        .select("*")
+        .eq("document_id", doc.id)
+        .order("step", { ascending: true });
+      
+      if (data && data.length > 0) {
+        approvalsMap[doc.id] = data;
+      }
+    }
+    setApprovals(approvalsMap);
   };
 
   // Calculate summary statistics
@@ -125,6 +148,59 @@ export default function Reports() {
       default:
         return status;
     }
+  };
+
+  const getStepStatus = (step, documentStatus, approvalsList) => {
+    // Check if this step is already approved
+    const approved = approvalsList?.find(a => a.step === step && a.status === "approved");
+    if (approved) {
+      return { status: "approved", by: approved.approved_by, at: approved.approved_at };
+    }
+    
+    // Check if this step is rejected
+    const rejected = approvalsList?.find(a => a.step === step && a.status === "rejected");
+    if (rejected) {
+      return { status: "rejected", by: rejected.approved_by, at: rejected.approved_at };
+    }
+    
+    // Check if current status matches this step
+    if (documentStatus === "pending_reviewer" && step === 1) return { status: "pending" };
+    if (documentStatus === "pending_manager" && step === 2) return { status: "pending" };
+    if (documentStatus === "pending_finance" && step === 3) return { status: "pending" };
+    
+    // If document is approved and step <= 3, all steps are approved
+    if (documentStatus === "approved" && step <= 3) return { status: "approved" };
+    
+    // If document is rejected at an earlier step
+    if (documentStatus === "rejected") {
+      if (approvalsList?.find(a => a.step === step && a.status === "rejected")) {
+        return { status: "rejected" };
+      }
+      if (approvalsList?.find(a => a.step < step && a.status === "rejected")) {
+        return { status: "blocked" };
+      }
+    }
+    
+    return { status: "pending" };
+  };
+
+  const getStepName = (step) => {
+    switch (step) {
+      case 1: return "Reviewer";
+      case 2: return "Manager";
+      case 3: return "Finance/Admin";
+      default: return `Step ${step}`;
+    }
+  };
+
+  const formatDate = (dateString) => {
+    if (!dateString) return "";
+    const date = new Date(dateString);
+    return date.toLocaleDateString();
+  };
+
+  const toggleRow = (docId) => {
+    setExpandedRow(expandedRow === docId ? null : docId);
   };
 
   return (
@@ -531,7 +607,7 @@ export default function Reports() {
         </div>
       </div>
 
-      {/* Documents Table */}
+      {/* Documents Table with Approval Timeline */}
       <div
         style={{
           backgroundColor: "white",
@@ -546,6 +622,7 @@ export default function Reports() {
               borderBottom: "1px solid #e5e7eb",
             }}>
             <tr>
+              <th style={{ width: "30px", padding: "12px" }}></th>
               <th
                 style={{
                   padding: "12px",
@@ -571,7 +648,7 @@ export default function Reports() {
                   fontSize: "12px",
                   color: "#6b7280",
                 }}>
-                Invoice #
+                Document #
               </th>
               <th
                 style={{
@@ -605,77 +682,132 @@ export default function Reports() {
           <tbody>
             {loading ? (
               <tr>
-                <td
-                  colSpan="6"
-                  style={{
-                    padding: "48px",
-                    textAlign: "center",
-                    color: "#9ca3af",
-                  }}>
+                <td colSpan="7" style={{ padding: "48px", textAlign: "center", color: "#9ca3af" }}>
                   Loading...
                 </td>
               </tr>
             ) : filteredDocs.length === 0 ? (
               <tr>
-                <td
-                  colSpan="6"
-                  style={{
-                    padding: "48px",
-                    textAlign: "center",
-                    color: "#9ca3af",
-                  }}>
+                <td colSpan="7" style={{ padding: "48px", textAlign: "center", color: "#9ca3af" }}>
                   No documents found
                 </td>
               </tr>
             ) : (
-              filteredDocs.map((doc) => (
-                <tr key={doc.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                  <td style={{ padding: "12px" }}>
-                    {doc.document_type === "invoice"
-                      ? "📄 Invoice"
-                      : "📝 Credit Note"}
-                  </td>
-                  <td style={{ padding: "12px", color: "#1f2937" }}>
-                    {doc.vendor_name}
-                  </td>
-                  <td style={{ padding: "12px", color: "#1f2937" }}>
-                    {doc.invoice_number}
-                  </td>
-                  <td style={{ padding: "12px", color: "#1f2937" }}>
-                    {doc.date}
-                  </td>
-                  <td
-                    style={{
-                      padding: "12px",
-                      textAlign: "right",
-                      color: "#1f2937",
-                    }}>
-                    R {parseFloat(doc.amount).toLocaleString()}
-                  </td>
-                  <td style={{ padding: "12px", textAlign: "center" }}>
-                    <span
-                      style={{
-                        fontSize: "11px",
-                        padding: "4px 8px",
-                        borderRadius: "12px",
-                        backgroundColor:
-                          doc.status === "approved"
-                            ? "#d1fae5"
-                            : doc.status === "rejected"
-                              ? "#fee2e2"
-                              : "#fef3c7",
-                        color:
-                          doc.status === "approved"
-                            ? "#065f46"
-                            : doc.status === "rejected"
-                              ? "#991b1b"
-                              : "#92400e",
-                      }}>
-                      {getStatusText(doc.status)}
-                    </span>
-                  </td>
-                </tr>
-              ))
+              filteredDocs.map((doc) => {
+                const approvalsList = approvals[doc.id];
+                return (
+                  <React.Fragment key={doc.id}>
+                    <tr style={{ borderBottom: "1px solid #f3f4f6", cursor: "pointer" }}>
+                      <td style={{ padding: "12px", textAlign: "center" }}>
+                        <button
+                          onClick={() => toggleRow(doc.id)}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            fontSize: "16px",
+                          }}
+                        >
+                          {expandedRow === doc.id ? "▼" : "▶"}
+                        </button>
+                      </td>
+                      <td style={{ padding: "12px" }}>
+                        {doc.document_type === "invoice" ? "📄 Invoice" : "📝 Credit Note"}
+                      </td>
+                      <td style={{ padding: "12px", color: "#1f2937" }}>
+                        {doc.vendor_name}
+                      </td>
+                      <td style={{ padding: "12px", color: "#1f2937" }}>
+                        {doc.invoice_number}
+                      </td>
+                      <td style={{ padding: "12px", color: "#1f2937" }}>
+                        {doc.date}
+                      </td>
+                      <td style={{ padding: "12px", textAlign: "right", color: "#1f2937" }}>
+                        R {parseFloat(doc.amount).toLocaleString()}
+                      </td>
+                      <td style={{ padding: "12px", textAlign: "center" }}>
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            padding: "4px 8px",
+                            borderRadius: "12px",
+                            backgroundColor:
+                              doc.status === "approved"
+                                ? "#d1fae5"
+                                : doc.status === "rejected"
+                                ? "#fee2e2"
+                                : "#fef3c7",
+                            color:
+                              doc.status === "approved"
+                                ? "#065f46"
+                                : doc.status === "rejected"
+                                ? "#991b1b"
+                                : "#92400e",
+                          }}>
+                          {getStatusText(doc.status)}
+                        </span>
+                      </td>
+                    </tr>
+                    {expandedRow === doc.id && (
+                      <tr>
+                        <td colSpan="7" style={{ padding: "16px", backgroundColor: "#f9fafb" }}>
+                          <div style={{ 
+                            borderLeft: "3px solid #e5e7eb", 
+                            paddingLeft: "20px",
+                            margin: "8px 0"
+                          }}>
+                            <h4 style={{ fontSize: "14px", fontWeight: "600", marginBottom: "12px", color: "#1f2937" }}>
+                              Approval Timeline
+                            </h4>
+                            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                              {[1, 2, 3].map((step) => {
+                                const stepStatus = getStepStatus(step, doc.status, approvalsList);
+                                return (
+                                  <div key={step} style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                                    <div style={{ width: "120px", fontSize: "13px", color: "#6b7280" }}>
+                                      Step {step}: {getStepName(step)}
+                                    </div>
+                                    <div style={{ flex: 1 }}>
+                                      {stepStatus.status === "approved" && (
+                                        <span style={{ color: "#10b981", fontSize: "13px" }}>
+                                          ✅ Approved {stepStatus.by && `by ${stepStatus.by.substring(0, 8)}`}
+                                          {stepStatus.at && ` on ${formatDate(stepStatus.at)}`}
+                                        </span>
+                                      )}
+                                      {stepStatus.status === "rejected" && (
+                                        <span style={{ color: "#ef4444", fontSize: "13px" }}>
+                                          ❌ Rejected {stepStatus.by && `by ${stepStatus.by.substring(0, 8)}`}
+                                          {stepStatus.at && ` on ${formatDate(stepStatus.at)}`}
+                                        </span>
+                                      )}
+                                      {stepStatus.status === "pending" && (
+                                        <span style={{ color: "#f59e0b", fontSize: "13px" }}>
+                                          ⏳ Pending
+                                        </span>
+                                      )}
+                                      {stepStatus.status === "blocked" && (
+                                        <span style={{ color: "#6b7280", fontSize: "13px" }}>
+                                          🚫 Blocked (rejected at earlier step)
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            {approvalsList && approvalsList.length > 0 && (
+                              <div style={{ marginTop: "12px", fontSize: "11px", color: "#9ca3af" }}>
+                                Last updated: {formatDate(approvalsList[approvalsList.length - 1]?.approved_at)}
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })
             )}
           </tbody>
         </table>
